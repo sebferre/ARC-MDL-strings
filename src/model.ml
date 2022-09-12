@@ -330,29 +330,110 @@ let rec doc_parse (m : doc_model) : doc_data parseur =
 
 (* description lengths *)
 
+let ascii_init_occs =
+  (* freely adapted from http://millikeys.sourceforge.net/freqanalysis.html *)
+  [ ' ', 70.;
+    'E', 18.;
+    'e', 18.;
+    'T', 13.;
+    't', 13.;
+    'A', 12.;
+    'a', 12.;
+    'O', 11.;
+    'o', 11.;
+    'I', 10.;
+    'i', 10.;
+    'N', 10.;
+    'n', 10.;
+    '0', 10.;
+    '1', 10.;
+    '2', 10.;
+    '3', 10.;
+    '4', 10.;
+    '5', 10.;
+    '6', 10.;
+    '7', 10.;
+    '8', 10.;
+    '9', 10.;
+    'H', 9.;
+    'h', 9.;
+    'S', 9.;
+    's', 9.;
+    'R', 8.;
+    'r', 8.;
+    'D', 7.;
+    'd', 7.;
+    'L', 6.;
+    'l', 6.;
+    'U', 4.;
+    'u', 4.;
+    'M', 4.;
+    'm', 4.;
+    'C', 4.;
+    'c', 4.;
+    'W', 3.5;
+    'w', 3.5;
+    'G', 3.;
+    'g', 3.;
+    'F', 3.;
+    'f', 3.;
+    'Y', 3.;
+    'y', 3.;
+    'P', 2.5;
+    'p', 2.5;
+    '_', 5.;
+    ',', 4.8;
+    '.', 4.7;
+    'B', 2.3;
+    'b', 2.3;
+    'K', 1.4;
+    'k', 1.4;
+    'V', 1.4;
+    'v', 1.4;
+    '"', 2.6;
+    '\'', 1.7;
+    '-', 1.0;
+    '?', 0.47;
+    'X', 0.23;
+    'x', 0.23;
+    'J', 0.22;
+    'j', 0.22;
+    ';', 0.31;
+    '!', 0.30;
+    'Q', 0.14;
+    'q', 0.14;
+    'Z', 0.13;
+    'z', 0.13;
+  ]
+(*let ascii_init_occs = []*)
+       
 let ascii_chars =
   let l = ref [] in
   for i = 0 to 127 do
     l := Char.chr i :: !l
   done;
   !l
+let make_ascii_prequential = new Mdl.Code.prequential ~init_occs:ascii_init_occs ascii_chars
 
 let letter_chars =
   let l = ref [] in
   for i = Char.code 'a' to Char.code 'z' do l := Char.chr i :: !l done;
   for i = Char.code 'A' to Char.code 'Z' do l := Char.chr i :: !l done;
   !l
+let make_letter_prequential = new Mdl.Code.prequential ~init_occs:ascii_init_occs letter_chars
 
 let num_chars =
   let l = ref [] in
   for i = Char.code '0' to Char.code '9' do l := Char.chr i :: !l done;
   !l
+let make_num_prequential = new Mdl.Code.prequential num_chars
 
 let alpha_chars = '_' :: num_chars @ letter_chars
+let make_alpha_prequential = new Mdl.Code.prequential ~init_occs:ascii_init_occs alpha_chars
      
-let dl_string_plus ?(chars = ascii_chars) (s : string) : dl =
+let dl_string_plus (make_pc : unit -> char Mdl.Code.prequential) (s : string) : dl =
   (* using prequential code *)
-  let pc = new Mdl.Code.prequential chars in
+  let pc = make_pc () in
   String.iter
     (fun c -> ignore (pc#code c))
     s;
@@ -378,7 +459,7 @@ let rec dl_doc_model : doc_model -> dl = function
 and dl_token_model : token_model -> dl = function
   | Const s ->
      Mdl.Code.usage 0.5
-     +. dl_string_plus s
+     +. dl_string_plus make_ascii_prequential s
   | Regex re ->
      Mdl.Code.usage 0.25
      +. dl_regex_model re
@@ -413,7 +494,7 @@ let rec doc_encoder : doc_model -> doc_data encoder = function
       | DAny s ->
          if s = ""
          then Mdl.Code.usage 0.5
-         else Mdl.Code.usage 0.5 +. dl_string_plus s
+         else Mdl.Code.usage 0.5 +. dl_string_plus make_ascii_prequential s
       | _ -> assert false)
   | Factor (l,m,r) ->
      let enc_l = doc_encoder l in
@@ -429,9 +510,9 @@ and token_encoder : token_model -> token_data encoder = function
      (function DToken s -> enc_re s)
   | Expr _ -> (function _ -> 0.)
 and regex_encoder : regex_model -> string encoder = function
-  | Alphas -> dl_string_plus ~chars:alpha_chars
-  | Nums -> dl_string_plus ~chars:num_chars
-  | Letters -> dl_string_plus ~chars:letter_chars
+  | Alphas -> dl_string_plus make_alpha_prequential
+  | Nums -> dl_string_plus make_num_prequential
+  | Letters -> dl_string_plus make_letter_prequential
 
 
 (* reading *)
