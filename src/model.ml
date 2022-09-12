@@ -341,7 +341,6 @@ let letter_chars =
   let l = ref [] in
   for i = Char.code 'a' to Char.code 'z' do l := Char.chr i :: !l done;
   for i = Char.code 'A' to Char.code 'Z' do l := Char.chr i :: !l done;
-  l := '-' :: !l;
   !l
 
 let num_chars =
@@ -351,13 +350,13 @@ let num_chars =
 
 let alpha_chars = '_' :: num_chars @ letter_chars
      
-let dl_string ?(chars = ascii_chars) (s : string) : dl =
+let dl_string_plus ?(chars = ascii_chars) (s : string) : dl =
   (* using prequential code *)
   let pc = new Mdl.Code.prequential chars in
   String.iter
     (fun c -> ignore (pc#code c))
     s;
-  Mdl.Code.universal_int_star (String.length s)
+  Mdl.Code.universal_int_plus (String.length s)
   +. pc#cumulated_dl
 
 let rec dl_doc_path : doc_path -> dl = function
@@ -370,16 +369,16 @@ and dl_token_path : token_path -> dl = function
   
 let rec dl_doc_model : doc_model -> dl = function
   | Nil -> Mdl.Code.usage 0.5
-  | Any -> Mdl.Code.usage 0.25
+  | Any -> Mdl.Code.usage 0.1
   | Factor (l,m,r) ->
-     Mdl.Code.usage 0.25
+     Mdl.Code.usage 0.4
      +. dl_doc_model l
      +. dl_token_model m
      +. dl_doc_model r
 and dl_token_model : token_model -> dl = function
   | Const s ->
      Mdl.Code.usage 0.5
-     +. dl_string s
+     +. dl_string_plus s
   | Regex re ->
      Mdl.Code.usage 0.25
      +. dl_regex_model re
@@ -387,9 +386,9 @@ and dl_token_model : token_model -> dl = function
      Mdl.Code.usage 0.25
      +. dl_string_expr e  
 and dl_regex_model : regex_model -> dl = function
-  | Alphas -> Mdl.Code.usage 0.5
-  | Nums -> Mdl.Code.usage 0.25
-  | Letters -> Mdl.Code.usage 0.25
+  | Alphas -> Mdl.Code.usage 0.2
+  | Nums -> Mdl.Code.usage 0.4
+  | Letters -> Mdl.Code.usage 0.4
 and dl_string_expr : string_expr -> dl = function
   | Ref p ->
      Mdl.Code.usage 0.8
@@ -405,8 +404,17 @@ type 'a encoder = 'a -> dl
 
 let rec doc_encoder : doc_model -> doc_data encoder = function
   (* assuming that the passed data matches the model *)
-  | Nil -> (function DNil -> 0. | _ -> assert false)
-  | Any -> (function DAny s -> dl_string s | _ -> assert false)
+  | Nil ->
+     (function
+      | DNil -> 0.
+      | _ -> assert false)
+  | Any ->
+     (function
+      | DAny s ->
+         if s = ""
+         then Mdl.Code.usage 0.5
+         else Mdl.Code.usage 0.5 +. dl_string_plus s
+      | _ -> assert false)
   | Factor (l,m,r) ->
      let enc_l = doc_encoder l in
      let enc_m = token_encoder m in
@@ -421,9 +429,9 @@ and token_encoder : token_model -> token_data encoder = function
      (function DToken s -> enc_re s)
   | Expr _ -> (function _ -> 0.)
 and regex_encoder : regex_model -> string encoder = function
-  | Alphas -> dl_string ~chars:alpha_chars
-  | Nums -> dl_string ~chars:num_chars
-  | Letters -> dl_string ~chars:letter_chars
+  | Alphas -> dl_string_plus ~chars:alpha_chars
+  | Nums -> dl_string_plus ~chars:num_chars
+  | Letters -> dl_string_plus ~chars:letter_chars
 
 
 (* reading *)

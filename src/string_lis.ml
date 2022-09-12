@@ -66,7 +66,7 @@ let task0 =
   let open Task in
   { train = [ {input = "Marie Dupont - 19/4/2000"; output = "M. Dupont, 2000"};
               {input = "Jean Martin - 12/8/1999"; output = "J. Martin, 1999"} ];
-    test = [ {input = "Marc Bonpain  -   13/12/2002"; output = "M. Bonpain, 2002"} ] }
+    test = [ {input = "Marc Bonpain - 13/12/2002"; output = "M. Bonpain, 2002"} ] }
 
 let initial_focus (name : string) (task : Task.task) : arc_focus =
   let norm_dl_model_data = Model.make_norm_dl_model_data () in
