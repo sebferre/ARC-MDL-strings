@@ -190,7 +190,14 @@ let rec doc_of_doc_data : doc_data -> string = function
                        ^ doc_of_doc_data r
 and doc_of_token_data : token_data -> string = function
   | DToken s -> s
-         
+
+let rec doc_data_length : doc_data -> int = function
+  | DNil -> 0
+  | DAny s -> String.length s
+  | DFactor (l,t,r) -> doc_data_length l + token_data_length t + doc_data_length r
+and token_data_length = function
+  | DToken s -> String.length s
+              
 let rec doc_find (p : doc_path) (d : doc_data) : string result =
   match p, d with
   | ThisDoc, _ -> Result.Ok (doc_of_doc_data d)
@@ -405,7 +412,6 @@ let ascii_init_occs =
     'Z', 0.13;
     'z', 0.13;
   ]
-(*let ascii_init_occs = []*)
        
 let ascii_chars =
   let l = ref [] in
@@ -413,7 +419,7 @@ let ascii_chars =
     l := Char.chr i :: !l
   done;
   !l
-let make_ascii_prequential = new Mdl.Code.prequential ~init_occs:ascii_init_occs ascii_chars
+let make_ascii_prequential = new Mdl.Code.prequential ascii_chars (* no assumption on char freq, not to spoil the value of specific regexs *)
 
 let letter_chars =
   let l = ref [] in
@@ -431,14 +437,13 @@ let make_num_prequential = new Mdl.Code.prequential num_chars
 let alpha_chars = '_' :: num_chars @ letter_chars
 let make_alpha_prequential = new Mdl.Code.prequential ~init_occs:ascii_init_occs alpha_chars
      
-let dl_string_plus (make_pc : unit -> char Mdl.Code.prequential) (s : string) : dl =
+let dl_char_plus (make_pc : unit -> char Mdl.Code.prequential) (s : string) : dl =
   (* using prequential code *)
   let pc = make_pc () in
   String.iter
     (fun c -> ignore (pc#code c))
     s;
-  Mdl.Code.universal_int_plus (String.length s)
-  +. pc#cumulated_dl
+  pc#cumulated_dl
 
 let rec dl_doc_path : doc_path -> dl = function
   | ThisDoc -> Mdl.Code.usage 0.5
@@ -448,18 +453,45 @@ let rec dl_doc_path : doc_path -> dl = function
 and dl_token_path : token_path -> dl = function
   | ThisToken -> 0.
   
-let rec dl_doc_model : doc_model -> dl = function
-  | Nil -> Mdl.Code.usage 0.5
-  | Any -> Mdl.Code.usage 0.1
-  | Factor (l,m,r) ->
-     Mdl.Code.usage 0.4
-     +. dl_doc_model l
-     +. dl_token_model m
-     +. dl_doc_model r
+let rec dl_doc_model (m : doc_model) : dl =
+  let nb_any, nb_factor = dl_doc_model_stats m in
+  Mdl.Code.universal_int_star nb_factor (* encoding total nb of factors/tokens *)
+  +. Mdl.Code.universal_int_star nb_any (* encoding total nb of Any's, to favor Nil's *)
+  (* +. Mdl.Code.uniform (nb_factor + 2) (* alternate encoding, based on bound for nb_any *) *)
+  +. dl_doc_model_aux nb_any nb_factor m
+and dl_doc_model_aux nb_any nb_factor = function
+  | Nil ->
+     assert (nb_any = 0 && nb_factor = 0);
+     0.
+  | Any ->
+     assert (nb_any = 1 && nb_factor = 0);
+     0.
+  | Factor (l,t,r) ->
+     let na_l, nf_l = dl_doc_model_stats l in
+     let na_r, nf_r = dl_doc_model_stats r in
+     assert (na_l + na_r = nb_any);
+     assert (nf_l + 1 + nf_r = nb_factor);
+     Mdl.Code.uniform (nb_factor) (* encoding split of remaining Factor's *)
+     +. Mdl.Code.uniform (* encoding split of Any's, values of na_l, na_r *)
+          (min nb_any (nf_l + 1) (* maximal possible value for na_l *)
+           - max 0 (nb_any - (nf_r + 1)) (* minimal possible value for na_l *)
+           + 1)
+     +. dl_doc_model_aux na_l nf_l l
+     +. dl_token_model t
+     +. dl_doc_model_aux na_r nf_r r
+and dl_doc_model_stats : doc_model -> int * int = function
+  (* counting Any and Factor inside doc_model *)
+  | Nil -> 0, 0
+  | Any -> 1, 0
+  | Factor (l,t,r) ->
+     let na_l, nf_l = dl_doc_model_stats l in
+     let na_r, nf_r = dl_doc_model_stats r in
+     na_l + na_r, nf_l + 1 + nf_r
 and dl_token_model : token_model -> dl = function
   | Const s ->
      Mdl.Code.usage 0.5
-     +. dl_string_plus make_ascii_prequential s
+     +. Mdl.Code.universal_int_plus (String.length s)
+     +. dl_char_plus make_ascii_prequential s
   | Regex re ->
      Mdl.Code.usage 0.25
      +. dl_regex_model re
@@ -467,9 +499,9 @@ and dl_token_model : token_model -> dl = function
      Mdl.Code.usage 0.25
      +. dl_string_expr e  
 and dl_regex_model : regex_model -> dl = function
-  | Alphas -> Mdl.Code.usage 0.2
-  | Nums -> Mdl.Code.usage 0.4
-  | Letters -> Mdl.Code.usage 0.4
+  | Alphas -> Mdl.Code.usage 0.4
+  | Nums -> Mdl.Code.usage 0.3
+  | Letters -> Mdl.Code.usage 0.3
 and dl_string_expr : string_expr -> dl = function
   | Ref p ->
      Mdl.Code.usage 0.8
@@ -483,36 +515,79 @@ and dl_string_expr : string_expr -> dl = function
 
 type 'a encoder = 'a -> dl
 
-let rec doc_encoder : doc_model -> doc_data encoder = function
+let rec doc_encoder (m : doc_model) : doc_data encoder =
   (* assuming that the passed data matches the model *)
+  let enc_m = doc_encoder_aux m in
+  fun d ->
+  let n = doc_data_length d in
+  Mdl.Code.universal_int_star n
+  +. enc_m d
+and doc_encoder_aux : doc_model -> doc_data encoder = function
   | Nil ->
      (function
       | DNil -> 0.
       | _ -> assert false)
   | Any ->
      (function
-      | DAny s ->
-         if s = ""
-         then Mdl.Code.usage 0.5
-         else Mdl.Code.usage 0.5 +. dl_string_plus make_ascii_prequential s
+      | DAny s -> dl_char_plus make_ascii_prequential s
       | _ -> assert false)
-  | Factor (l,m,r) ->
-     let enc_l = doc_encoder l in
-     let enc_m = token_encoder m in
-     let enc_r = doc_encoder r in
+  | Factor (l,t,r) ->
+     let enc_split = (* TODO: better take into account actual l, t, r *)
+       let al, bl = doc_encoder_stats l in
+       let at, bt = token_encoder_stats t in
+       let ar, br = doc_encoder_stats r in
+       (fun (nl,nt,nr) ->
+         let n = nl + nt + nr in (* n is assumed known from above *)
+         let min_nl =
+           if bt = max_int || br = max_int
+           then max 0 al
+           else max 0 (max al (n - min n (bt + br))) in
+         let max_nl = min n (min bl (n - (at + ar))) in
+         let min_nt = max 1 (max at ((n - nl) - min n br)) in (* given nl *)
+         let max_nt = min (n - nl) (min bt ((n - nl) - ar)) in (* given nl *)
+         Mdl.Code.uniform (* encoding nl given n, a's and b's *)
+           (max_nl - min_nl + 1)
+         +. Mdl.Code.uniform (* encoding nt given nl, a, a's, and b's *)
+              (max_nt - min_nt + 1)
+         +. 0. (* encoding nr = n - nl - nt *)
+       ) in
+     let enc_l = doc_encoder_aux l in
+     let enc_t = token_encoder t in
+     let enc_r = doc_encoder_aux r in
      (function
-      | DFactor (dl,dm,dr) -> enc_l dl +. enc_m dm +. enc_r dr
+      | DFactor (dl,dt,dr) ->
+         let nl_nt_nr = doc_data_length dl, token_data_length dt, doc_data_length dr in
+         enc_split nl_nt_nr +. enc_l dl +. enc_t dt +. enc_r dr
       | _ -> assert false)
+and doc_encoder_stats : doc_model -> int * int = function
+  (* min-max length interval for doc_models, using max_int as infinity *)
+  (* BEWARE when suming max values!! *)
+  | Nil -> 0, 0
+  | Any -> 0, max_int
+  | Factor (l,t,r) ->
+     let al, bl = doc_encoder_stats l in
+     let at, bt = token_encoder_stats t in
+     let ar, br = doc_encoder_stats r in
+     al+at+ar,
+     (if bl = max_int || bt = max_int || br = max_int
+      then max_int
+      else bl+bt+br)
+and token_encoder_stats : token_model -> int * int = function
+  | Const s ->
+     let n = String.length s in
+     n, n
+  | Regex _ -> 1, max_int
+  | Expr _ -> assert false
 and token_encoder : token_model -> token_data encoder = function
   | Const _ -> (function DToken _ -> 0.)
   | Regex re ->
      let enc_re = regex_encoder re in
      (function DToken s -> enc_re s)
-  | Expr _ -> (function _ -> 0.)
+  | Expr _ -> assert false
 and regex_encoder : regex_model -> string encoder = function
-  | Alphas -> dl_string_plus make_alpha_prequential
-  | Nums -> dl_string_plus make_num_prequential
-  | Letters -> dl_string_plus make_letter_prequential
+  | Alphas -> dl_char_plus make_alpha_prequential
+  | Nums -> dl_char_plus make_num_prequential
+  | Letters -> dl_char_plus make_letter_prequential
 
 
 (* reading *)
@@ -535,7 +610,7 @@ let read_doc ~(env : env) (m0 : doc_model) (s : string) : doc_read list result =
   let parses =
     let* data = doc_parse m s in
     let dl = (* QUICK *)
-      let dl_data = doc_encoder m0 data in
+      let dl_data = doc_encoder m data in
       (* rounding before sorting to absorb float error accumulation *)
       dl_round dl_data in
     Myseq.return (env, data, dl) in
@@ -670,7 +745,7 @@ let doc_refinements (m : doc_model) (dsr : docs_reads) : (doc_path * doc_refinem
              let* s = Myseq.from_list common_strings in (* TODO: add a to_seq in bintree.ml *)
              if s = ""
              then Myseq.empty
-             else (Printf.printf "common string: %s" s; Myseq.return (ThisDoc, RFactor (Nil, Const s, Nil)))))
+             else Myseq.return (ThisDoc, RFactor (Nil, Const s, Nil))))
     | Factor (l,t,r) ->
        Myseq.concat
          [ fold_token t
