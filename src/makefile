@@ -1,6 +1,6 @@
 
 OBJ=bintree.cmo common.cmo xprint.cmo iterator.cmo myseq.cmo mdl.cmo find_merge.cmo intmap.cmo
-SRC=task.cmo model.cmo
+SRC=range.cmo task.cmo model.cmo
 SRC_FABLIS=focus.cmo syntax.cmo lis.cmo jsutils.cmo webapp.cmo html.cmo widget_focus.cmo widget_suggestions.cmo widget_table.cmo widget_commandline.cmo
 
 FLAGS= -I ../../lib -package str,num,zarith,yojson,ppx_deriving_yojson,ANSITerminal

@@ -533,22 +533,25 @@ and doc_encoder_aux : doc_model -> doc_data encoder = function
       | _ -> assert false)
   | Factor (l,t,r) ->
      let enc_split = (* TODO: better take into account actual l, t, r *)
-       let al, bl = doc_encoder_stats l in
-       let at, bt = token_encoder_stats t in
-       let ar, br = doc_encoder_stats r in
+       let range_l = doc_encoder_range l in
+       let range_t = token_encoder_range t in
+       let range_r = doc_encoder_range r in
        (fun (nl,nt,nr) ->
          let n = nl + nt + nr in (* n is assumed known from above *)
-         let min_nl =
-           if bt = max_int || br = max_int
-           then max 0 al
-           else max 0 (max al (n - min n (bt + br))) in
-         let max_nl = min n (min bl (n - (at + ar))) in
-         let min_nt = max 1 (max at ((n - nl) - min n br)) in (* given nl *)
-         let max_nt = min (n - nl) (min bt ((n - nl) - ar)) in (* given nl *)
-         Mdl.Code.uniform (* encoding nl given n, a's and b's *)
-           (max_nl - min_nl + 1)
-         +. Mdl.Code.uniform (* encoding nt given nl, a, a's, and b's *)
-              (max_nt - min_nt + 1)
+         let range_nl = Range.inter_list [
+                            Range.make_closed 0 n;
+                            range_l;
+                            Range.sub
+                              (Range.make_exact n)
+                              (Range.add range_t range_r) ] in
+         let range_nt = Range.inter_list [ (* given nl *)
+                            Range.make_closed 1 (n - nl);
+                            range_t;
+                            Range.sub
+                              (Range.make_exact (n - nl))
+                              range_r ] in
+         Range.dl nl range_nl (* encoding nl given n, and ranges *)
+         +. Range.dl nt range_nt  (* encoding nt given n, n, and ranges  *)
          +. 0. (* encoding nr = n - nl - nt *)
        ) in
      let enc_l = doc_encoder_aux l in
@@ -559,24 +562,18 @@ and doc_encoder_aux : doc_model -> doc_data encoder = function
          let nl_nt_nr = doc_data_length dl, token_data_length dt, doc_data_length dr in
          enc_split nl_nt_nr +. enc_l dl +. enc_t dt +. enc_r dr
       | _ -> assert false)
-and doc_encoder_stats : doc_model -> int * int = function
-  (* min-max length interval for doc_models, using max_int as infinity *)
-  (* BEWARE when suming max values!! *)
-  | Nil -> 0, 0
-  | Any -> 0, max_int
+and doc_encoder_range : doc_model -> Range.t = function
+  (* min-max length range for doc_models *)
+  | Nil -> Range.make_exact 0
+  | Any -> Range.make_open 0
   | Factor (l,t,r) ->
-     let al, bl = doc_encoder_stats l in
-     let at, bt = token_encoder_stats t in
-     let ar, br = doc_encoder_stats r in
-     al+at+ar,
-     (if bl = max_int || bt = max_int || br = max_int
-      then max_int
-      else bl+bt+br)
-and token_encoder_stats : token_model -> int * int = function
-  | Const s ->
-     let n = String.length s in
-     n, n
-  | Regex _ -> 1, max_int
+     let range_l = doc_encoder_range l in
+     let range_t = token_encoder_range t in
+     let range_r = doc_encoder_range r in
+     Range.sum [range_l; range_t; range_r]
+and token_encoder_range : token_model -> Range.t = function
+  | Const s -> Range.make_exact (String.length s)
+  | Regex _ -> Range.make_open 1
   | Expr _ -> assert false
 and token_encoder : token_model -> token_data encoder = function
   | Const _ -> (function DToken _ -> 0.)
