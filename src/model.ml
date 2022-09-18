@@ -124,9 +124,9 @@ let xp_string (print : Xprint.t) (s : string) =
 let pp_string = Xprint.to_stdout xp_string
          
 let rec xp_doc_path (print : Xprint.t) = function
-  | ThisDoc -> print#string "^"
+  | ThisDoc -> print#string "."
   | Left p1 -> print#string "0"; xp_doc_path print p1
-  | Middle p1 -> print#string "."; xp_token_path print p1
+  | Middle p1 -> print#string "@"; xp_token_path print p1
   | Right p1 -> print#string "1"; xp_doc_path print p1
 and xp_token_path print = function
   | ThisToken -> ()
@@ -204,21 +204,20 @@ and token_find p d =
   | ThisToken, _ -> Result.Ok (`String (doc_of_token_data d))
 
 let doc_bindings (d : doc_data) : (doc_path * Expr.value) list =
-  let rec aux d acc =
+  let rec aux_doc ctx d acc =
     match d with
     | DNil -> acc
     | DAny _ -> acc
-    | DFactor (l, DToken s, r) ->
-       let acc =
-         aux r acc
-         |> List.map (fun (p1,v) -> (Right p1, v)) in
-       let acc =
-         aux l acc
-         |> List.map (fun (p1,v) -> (Left p1, v)) in
-       (Middle ThisToken, `String s) :: acc
+    | DFactor (l,t,r) ->
+       let acc = aux_doc (fun p -> ctx (Right p)) r acc in
+       let acc = aux_doc (fun p -> ctx (Left p)) l acc in
+       let acc = aux_token (fun p -> ctx (Middle p)) t acc in
+       acc
+  and aux_token ctx t acc =
+    match t with
+    | DToken s -> (ctx ThisToken, `String s) :: acc
   in
-  aux d []
-                  
+  aux_doc (fun p -> p) d []
 
 let rec doc_apply (m : doc_model) (env : env) : doc_model result =
   match m with
