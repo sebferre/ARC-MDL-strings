@@ -64,7 +64,7 @@ let rec state_of_model (name : string) (task : Task.task) norm_dl_model_data (re
 let name0 = "default: name + birthdate"
 let task0 =
   let open Task in
-  { train = [ {input = "Marie Dupont - 19/4/2000"; output = "M. Dupont, 2000"};
+  { train = [ {input = "marie Dupont - 19/4/2000"; output = "M. Dupont, 2000"};
               {input = "Jean Martin - 12/8/1999"; output = "J. Martin, 1999"} ];
     test = [ {input = "Marc Bonpain - 13/12/2002"; output = "M. Bonpain, 2002"} ] }
 

@@ -88,6 +88,8 @@ type doc_path =
   | Right of doc_path
 and token_path =
   | ThisToken
+
+type expr = doc_path Expr.expr (* using doc_paths as vars *)
         
 type doc_model =
   | Nil
@@ -96,11 +98,7 @@ type doc_model =
 and token_model =
   | Const of string
   | Regex of regex_model
-  | Expr of string_expr
-and string_expr =
-  | Ref of doc_path
-  | Lowercase of string_expr
-  | Uppercase of string_expr
+  | Expr of expr
 and regex_model =
   | Alphas (* [-A-Za-z0-9_]+ *)
   | Nums (* [0-9]+\([.][0-9]*\)? *)
@@ -126,7 +124,7 @@ let xp_string (print : Xprint.t) (s : string) =
 let pp_string = Xprint.to_stdout xp_string
          
 let rec xp_doc_path (print : Xprint.t) = function
-  | ThisDoc -> print#string ""
+  | ThisDoc -> print#string "^"
   | Left p1 -> print#string "0"; xp_doc_path print p1
   | Middle p1 -> print#string "."; xp_token_path print p1
   | Right p1 -> print#string "1"; xp_doc_path print p1
@@ -150,15 +148,11 @@ and xp_doc_model_aux print = function
 and xp_token_model print = function
   | Const s -> xp_string print s
   | Regex re -> xp_regex_model print re
-  | Expr e -> xp_string_expr print e
+  | Expr e -> Expr.xp_expr xp_doc_path print e
 and xp_regex_model print = function
   | Alphas -> print#string "?_Alphas_"
   | Nums -> print#string "?_Nums_"
   | Letters -> print#string "?_Letters_"
-and xp_string_expr print = function
-  | Ref p -> xp_doc_path print p
-  | Uppercase e1 -> print#string "uppercase("; xp_string_expr print e1; print#string ")"
-  | Lowercase e1 -> print#string "lowercase("; xp_string_expr print e1; print#string ")"
 let pp_doc_model = Xprint.to_stdout xp_doc_model
 let string_of_doc_model = Xprint.to_string xp_doc_model
                     
@@ -198,17 +192,33 @@ let rec doc_data_length : doc_data -> int = function
 and token_data_length = function
   | DToken s -> String.length s
               
-let rec doc_find (p : doc_path) (d : doc_data) : string result =
+let rec doc_find (p : doc_path) (d : doc_data) : Expr.value result =
   match p, d with
-  | ThisDoc, _ -> Result.Ok (doc_of_doc_data d)
+  | ThisDoc, _ -> Result.Ok (`String (doc_of_doc_data d))
   | Left p1, DFactor (l,_,_) -> doc_find p1 l
   | Middle p1, DFactor (_,t,_) -> token_find p1 t
   | Right p1, DFactor (_,_,r) -> doc_find p1 r
   | _ -> assert false
 and token_find p d =
   match p, d with
-  | ThisToken, _ -> Result.Ok (doc_of_token_data d)
+  | ThisToken, _ -> Result.Ok (`String (doc_of_token_data d))
 
+let doc_bindings (d : doc_data) : (doc_path * Expr.value) list =
+  let rec aux d acc =
+    match d with
+    | DNil -> acc
+    | DAny _ -> acc
+    | DFactor (l, DToken s, r) ->
+       let acc =
+         aux r acc
+         |> List.map (fun (p1,v) -> (Right p1, v)) in
+       let acc =
+         aux l acc
+         |> List.map (fun (p1,v) -> (Left p1, v)) in
+       (Middle ThisToken, `String s) :: acc
+  in
+  aux d []
+                  
 
 let rec doc_apply (m : doc_model) (env : env) : doc_model result =
   match m with
@@ -224,17 +234,9 @@ and token_apply t env : token_model result =
   | Const s -> Result.Ok (Const s)
   | Regex re -> Result.Ok (Regex re)
   | Expr e ->
-     let| s = string_expr_apply e env in
+     let| v = Expr.eval (fun p -> doc_find p env) e in
+     let| s = Expr.string_of_value v in     
      Result.Ok (Const s)
-and string_expr_apply e env : string result =
-  match e with
-  | Ref p -> doc_find p env
-  | Lowercase e1 ->
-     let| s1 = string_expr_apply e1 env in
-     Result.Ok (String.lowercase_ascii s1)
-  | Uppercase e1 ->
-     let| s1 = string_expr_apply e1 env in
-     Result.Ok (String.uppercase_ascii s1)
 
      
 (* generate *)
@@ -445,7 +447,7 @@ let dl_char_plus (make_pc : unit -> char Mdl.Code.prequential) (s : string) : dl
     s;
   pc#cumulated_dl
 
-let rec dl_doc_path : doc_path -> dl = function
+let rec dl_doc_path : doc_path -> dl = function (* TODO: take env into account *)
   | ThisDoc -> Mdl.Code.usage 0.5
   | Left p1 -> Mdl.Code.usage 0.1 +. dl_doc_path p1
   | Middle p1 -> Mdl.Code.usage 0.3 +. dl_token_path p1
@@ -497,21 +499,11 @@ and dl_token_model : token_model -> dl = function
      +. dl_regex_model re
   | Expr e ->
      Mdl.Code.usage 0.25
-     +. dl_string_expr e  
+     +. Expr.dl_expr dl_doc_path e  
 and dl_regex_model : regex_model -> dl = function
   | Alphas -> Mdl.Code.usage 0.4
   | Nums -> Mdl.Code.usage 0.3
   | Letters -> Mdl.Code.usage 0.3
-and dl_string_expr : string_expr -> dl = function
-  | Ref p ->
-     Mdl.Code.usage 0.8
-     +. dl_doc_path p (* TODO: should take env-model into account *)
-  | Uppercase e1 ->
-     Mdl.Code.usage 0.1
-     +. dl_string_expr e1
-  | Lowercase e1 ->
-     Mdl.Code.usage 0.1
-     +. dl_string_expr e1
 
 type 'a encoder = 'a -> dl
 
@@ -648,7 +640,7 @@ type doc_refinement =
   | RNil
   | RFactor of doc_model * token_model * doc_model (* at doc Any *)
   | RToken of token_model (* token specialization *)
-  | RExpr of string_expr
+  | RExpr of expr
 
 let xp_doc_refinement (print : Xprint.t) = function
   | RNil -> print#string "nil"
@@ -659,7 +651,7 @@ let xp_doc_refinement (print : Xprint.t) = function
      xp_doc_model_aux print r;
      print#string "|"
   | RToken tok -> xp_token_model print tok
-  | RExpr e -> xp_string_expr print e
+  | RExpr e -> Expr.xp_expr xp_doc_path print e
 let pp_doc_refinement = Xprint.to_stdout xp_doc_refinement
            
 let apply_doc_refinement (r : doc_refinement) (p : doc_path) (m : doc_model) : doc_model =
@@ -684,51 +676,61 @@ let apply_doc_refinement (r : doc_refinement) (p : doc_path) (m : doc_model) : d
   in
   aux_doc p m
 
-let for_all_reads (f : 'a read -> bool) (reads : 'a read list list) : bool =
-  List.for_all
-    (fun example_reads ->
-      List.exists
-        (fun read ->
-          f read)
-        example_reads)
-    reads
-
-let map_reads (f : 'a -> 'b) (reads : 'a read list list) : 'b read list list  =
+let map_reads (f : 'a -> 'b) (reads : 'a list list) : 'b list list  =
   List.map
     (fun example_reads ->
-      List.map
-        (fun (env,data,dl) ->
-          (env, f data, dl))
-        example_reads)
+      List.map f example_reads)
     reads
 
-let common_reads (norm : 'a -> 'b) (reads : 'a read list list) : 'b Bintree.t =
-  let sets =
-    List.map
-      (fun example_reads ->
-        List.fold_left
-          (fun res (env,data,dl) -> Bintree.add (norm data) res)
-          Bintree.empty example_reads)
-      reads in
-  match sets with
+let inter_union_reads (* to find things common to all examples, in at least one parse of each example *)
+      ~(init : 'b) (* neutral value for union *)
+      ~(union : 'b -> 'a -> 'b) (* taking into account another parse of the same example *)
+      ~(inter : 'b -> 'b -> 'b) (* finding what is in common between two examples *)
+      (reads : 'a list list) : 'b =
+  let process_example reads =
+    List.fold_left
+      (fun res read -> union res read)
+      init reads in
+  match reads with
   | [] -> assert false
-  | set0::sets1 ->
-     List.fold_left Bintree.inter set0 sets1
-     
+  | example0_reads :: other_reads ->
+     let res0 = process_example example0_reads in
+     List.fold_left
+       (fun res exampleI_reads ->
+         let resI = process_example exampleI_reads in
+         inter res resI)
+       res0 other_reads
   
 let doc_refinements (m : doc_model) (dsr : docs_reads) : (doc_path * doc_refinement * doc_model) Myseq.t =
+  let reads = (* replacing env's with expression index's over them *)
+    map_reads
+      (fun (env,data,dl) ->
+        (Expr.make_index (doc_bindings env), data, dl))
+      dsr.reads in
   let rec fold_doc m reads =
     match m with
     | Nil -> Myseq.empty
     | Any ->
-       myseq_cons_if
-         (reads |> for_all_reads (fun (env,data,dl) -> doc_of_doc_data data = ""))
+       let is_nil, is_not_nil, common_strings =
+         inter_union_reads
+           ~init:(false, false, Bintree.empty)
+           ~union:(fun (is_nil, is_not_nil, common_strings) (_,data,_) ->
+             let s = doc_of_doc_data data in
+             is_nil || s = "",
+             is_not_nil || s <> "",
+             if s = "" then common_strings else Bintree.add s common_strings)
+           ~inter:(fun (is_nil1, is_not_nil1, common_strings1)
+                       (is_nil2, is_not_nil2, common_strings2) ->
+             is_nil1 && is_nil2,
+             is_not_nil1 && is_not_nil2,
+             Bintree.inter common_strings1 common_strings2)
+           reads in       
+       myseq_cons_if is_nil
          (ThisDoc, RNil)
-         (myseq_concat_if
-            (reads |> for_all_reads (fun (env,data,dl) -> doc_of_doc_data data <> ""))
+         (myseq_concat_if is_not_nil
             (let* re = Myseq.from_list [Alphas; Nums; Letters] in
              Myseq.return (ThisDoc, RFactor (Any, Regex re, Any)))
-            (let _ =
+            ((*let _ =
                print_endline
                  (String.concat "; "
                     (List.map
@@ -737,60 +739,79 @@ let doc_refinements (m : doc_model) (dsr : docs_reads) : (doc_path * doc_refinem
                            (List.map
                               (function (_, DAny s, _) -> s | _ -> assert false)
                               example_reads))
-                       reads)) in
-             let common_strings = Bintree.elements (common_reads doc_of_doc_data reads) in
-             let* s = Myseq.from_list common_strings in (* TODO: add a to_seq in bintree.ml *)
-             if s = ""
-             then Myseq.empty
-             else Myseq.return (ThisDoc, RFactor (Nil, Const s, Nil))))
+                       reads)) in *)
+             let* s = Myseq.from_list (Bintree.elements common_strings) in (* TODO: add a to_seq in bintree.ml *)
+             Myseq.return (ThisDoc, RFactor (Nil, Const s, Nil))))
     | Factor (l,t,r) ->
        Myseq.concat
          [ fold_token t
              (map_reads
                 (function
-                 | DFactor (_,dt,_) -> dt
+                 | (idx, DFactor (_,dt,_), l) -> (idx, dt, l)
                  | _ -> assert false)
                 reads)
            |> Myseq.map (fun (p,r) -> Middle p, r);
            fold_doc l
              (map_reads
                 (function
-                 | DFactor (dl,_,_) -> dl
+                 | (idx, DFactor (dl,_,_), l) -> (idx, dl, l)
                  | _ -> assert false)
                 reads)
            |> Myseq.map (fun (p,r) -> Left p,r);
            fold_doc r
              (map_reads
                 (function
-                 | DFactor (_,_,dr) -> dr
+                 | (idx, DFactor (_,_,dr), l) -> (idx, dr, l)
                  | _ -> assert false)
                 reads)
            |> Myseq.map (fun (p,r) -> Right p, r) ]
-  and fold_token (m : token_model) (reads : token_read list list) =
+  and fold_token (m : token_model) reads =
     match m with
     | Const s -> Myseq.empty
     | Regex re ->
+       let re'_ok_init =
+         match re with
+         | Alphas -> [Nums, false; Letters, false]
+         | _ -> [] in
+       let (common_strings : string Bintree.t), (re'_ok : (regex_model * bool) list), (exprs : doc_path Expr.exprset list) =
+         inter_union_reads
+           ~init:(Bintree.empty, re'_ok_init, [])
+           ~union:(fun (common_strings, re'_ok, exprs) (idx,data,_) ->
+             let s = doc_of_token_data data in
+             let es = Expr.index_lookup (`String s) idx in
+             (if s = "" then common_strings else Bintree.add s common_strings),
+             List.map
+               (fun (re',ok) ->
+                 (re', ok || regexp_match_full (re_of_regexp re') s))
+               re'_ok,
+             (if es = [] then exprs else es::exprs))
+           ~inter:(fun (common_strings1, re'_ok1, exprs1) (common_strings2, re'_ok2, exprs2) ->
+             Bintree.inter common_strings1 common_strings2,
+             List.map2
+               (fun (re'1,ok1) (re'2,ok2) ->
+                 assert (re'1 = re'2);
+                 (re'1, ok1 && ok2))
+               re'_ok1 re'_ok2,
+             Expr.exprset_inter_list exprs1 exprs2)
+           reads in
        Myseq.concat
          [ (* constant strings *)
-           (let common_strings = Bintree.elements (common_reads doc_of_token_data reads) in
-            let* s = Myseq.from_list common_strings in (* TODO: add a to_seq in bintree.ml *)
+           (let* s = Myseq.from_list (Bintree.elements common_strings) in (* TODO: add a to_seq in bintree.ml *)
             Myseq.return (ThisToken, RToken (Const s)));
            
            (* regexp specialization *)
-           (let* re' =
-              Myseq.from_list
-                (match re with
-                 | Alphas -> [Nums; Letters]
-                 | _ -> []) in
-            if reads
-               |> for_all_reads
-                    (fun (env,data,dl) ->
-                      regexp_match_full (re_of_regexp re') (doc_of_token_data data))
+           (let* re', ok = Myseq.from_list re'_ok in
+            if ok
             then Myseq.return (ThisToken, RToken (Regex re'))
-            else Myseq.empty) ]
+            else Myseq.empty);
+
+           (* expressions *)
+           (let* es = Myseq.from_list exprs in
+            let* e = Expr.exprset_to_seq es in
+            Myseq.return (ThisToken, RExpr e)) ]
     | Expr e -> Myseq.empty
   in
-  let* p, r = fold_doc m dsr.reads in
+  let* p, r = fold_doc m reads in
   Myseq.return (p, r, apply_doc_refinement r p m)
 
 (* examples  / pairs *)
