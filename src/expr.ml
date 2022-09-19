@@ -94,28 +94,45 @@ let rec eval (lookup : 'var -> value result) : 'var expr -> value result = funct
      let res = Funct.concat s1 s2 in
      Result.Ok (`String res)
 
-let rec dl_expr (dl_var : 'var -> dl) : 'var expr -> dl = function
+let dl_funct = Mdl.Code.uniform 5 (* 5 functions *)
+     
+let rec dl_expr (dl_var : 'var -> dl) (e : 'var expr) : dl =
+  let nb_funct = dl_expr_stats e in
+  Mdl.Code.universal_int_star nb_funct
+  +. dl_expr_aux dl_var nb_funct e
+and dl_expr_aux dl_var nb_funct = function
   | `Ref p ->
-     Mdl.Code.usage 0.7
-     +. dl_var p
+     assert (nb_funct = 0); (* must be a ref *)
+     dl_var p
   | `Uppercase e1 ->
-     Mdl.Code.usage 0.1
-     +. dl_expr dl_var e1
+     dl_funct
+     +. dl_expr_aux dl_var (nb_funct - 1) e1
   | `Lowercase e1 ->
-     Mdl.Code.usage 0.1
-     +. dl_expr dl_var e1
+     dl_funct
+     +. dl_expr_aux dl_var (nb_funct - 1) e1
   | `Initial e1 ->
-     Mdl.Code.usage 0.1
-     +. dl_expr dl_var e1
+     dl_funct
+     +. dl_expr_aux dl_var (nb_funct - 1) e1
   | `Length e1 -> (* not yet used *)
-     Mdl.Code.usage 0.
-     +. dl_expr dl_var e1
-  | `Concat (e1,e2) -> (* not yet used *)
-     Mdl.Code.usage 0.
-     +. dl_expr dl_var e1
-     +. dl_expr dl_var e2
+     dl_funct
+     +. dl_expr_aux dl_var (nb_funct - 1) e1
+  | `Concat (e1,e2) ->
+     let nb1 = dl_expr_stats e1 in
+     let nb2 = dl_expr_stats e2 in
+     assert (nb1 + nb2 + 1 = nb_funct);
+     dl_funct
+     +. Mdl.Code.uniform (nb1 + 1) (* choosing split of functions between e1 and e2 *)
+     +. dl_expr_aux dl_var nb1 e1
+     +. dl_expr_aux dl_var nb2 e2
+and dl_expr_stats : 'var expr -> int = function (* counting function applications *)
+  | `Ref _ -> 0
+  | `Uppercase e1 -> 1 + dl_expr_stats e1
+  | `Lowercase e1 -> 1 + dl_expr_stats e1
+  | `Initial e1 -> 1 + dl_expr_stats e1
+  | `Length e1 -> 1 + dl_expr_stats e1
+  | `Concat (e1,e2) -> 1 + dl_expr_stats e1 + dl_expr_stats e2
 
-    
+                     
 (* expression sets : idea taken from FlashMeta *)
     
 type 'var exprset = 'var expritem list

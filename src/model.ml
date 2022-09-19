@@ -526,14 +526,14 @@ and dl_doc_model_stats : doc_model -> int * int = function
      na_l + na_r, nf_l + 1 + nf_r
 and dl_token_model : token_model -> dl = function
   | Const s ->
-     Mdl.Code.usage 0.5
+     Mdl.Code.usage 0.3
      +. Mdl.Code.universal_int_plus (String.length s)
      +. dl_char_plus make_ascii_prequential s
   | Regex re ->
-     Mdl.Code.usage 0.25
+     Mdl.Code.usage 0.2
      +. dl_regex_model re
   | Expr e ->
-     Mdl.Code.usage 0.25
+     Mdl.Code.usage 0.5
      +. Expr.dl_expr dl_doc_path e  
 and dl_regex_model : regex_model -> dl = function
   | Alphas -> Mdl.Code.usage 0.4
