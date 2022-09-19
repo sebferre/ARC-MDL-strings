@@ -482,21 +482,22 @@ let dl_char_plus (make_pc : unit -> char Mdl.Code.prequential) (s : string) : dl
     s;
   pc#cumulated_dl
 
-let rec dl_doc_path : doc_path -> dl = function (* TODO: take env into account *)
+(* let rec dl_doc_path : doc_path -> dl = function (* TODO: take env into account *)
   | ThisDoc -> Mdl.Code.usage 0.5
   | Left p1 -> Mdl.Code.usage 0.1 +. dl_doc_path p1
   | Middle p1 -> Mdl.Code.usage 0.3 +. dl_token_path p1
   | Right p1 -> Mdl.Code.usage 0.1 +. dl_doc_path p1
 and dl_token_path : token_path -> dl = function
-  | ThisToken -> 0.
+  | ThisToken -> 0. *)
   
-let rec dl_doc_model (m : doc_model) : dl =
+let rec dl_doc_model ~(env : doc_model) (m : doc_model) : dl =
+  let nb_env_paths = dl_doc_model_env_stats env in (* useful view on the environment model *)
   let nb_any, nb_factor = dl_doc_model_stats m in
   Mdl.Code.universal_int_star nb_factor (* encoding total nb of factors/tokens *)
   +. Mdl.Code.universal_int_star nb_any (* encoding total nb of Any's, to favor Nil's *)
   (* +. Mdl.Code.uniform (nb_factor + 2) (* alternate encoding, based on bound for nb_any *) *)
-  +. dl_doc_model_aux nb_any nb_factor m
-and dl_doc_model_aux nb_any nb_factor = function
+  +. dl_doc_model_aux ~nb_env_paths nb_any nb_factor m
+and dl_doc_model_aux ~nb_env_paths nb_any nb_factor = function
   | Nil ->
      assert (nb_any = 0 && nb_factor = 0);
      0.
@@ -513,9 +514,9 @@ and dl_doc_model_aux nb_any nb_factor = function
           (min nb_any (nf_l + 1) (* maximal possible value for na_l *)
            - max 0 (nb_any - (nf_r + 1)) (* minimal possible value for na_l *)
            + 1)
-     +. dl_doc_model_aux na_l nf_l l
-     +. dl_token_model t
-     +. dl_doc_model_aux na_r nf_r r
+     +. dl_doc_model_aux ~nb_env_paths na_l nf_l l
+     +. dl_token_model ~nb_env_paths t
+     +. dl_doc_model_aux ~nb_env_paths na_r nf_r r
 and dl_doc_model_stats : doc_model -> int * int = function
   (* counting Any and Factor inside doc_model *)
   | Nil -> 0, 0
@@ -524,7 +525,15 @@ and dl_doc_model_stats : doc_model -> int * int = function
      let na_l, nf_l = dl_doc_model_stats l in
      let na_r, nf_r = dl_doc_model_stats r in
      na_l + na_r, nf_l + 1 + nf_r
-and dl_token_model : token_model -> dl = function
+and dl_doc_model_env_stats : doc_model -> int = function
+  (* counting paths to tokens *)
+  | Nil -> 0
+  | Any -> 0
+  | Factor (l,t,r) ->
+     dl_doc_model_env_stats l
+     + 1
+     + dl_doc_model_env_stats r
+and dl_token_model ~nb_env_paths : token_model -> dl = function
   | Const s ->
      Mdl.Code.usage 0.3
      +. Mdl.Code.universal_int_plus (String.length s)
@@ -534,7 +543,7 @@ and dl_token_model : token_model -> dl = function
      +. dl_regex_model re
   | Expr e ->
      Mdl.Code.usage 0.5
-     +. Expr.dl_expr dl_doc_path e  
+     +. Expr.dl_expr (fun p -> Mdl.Code.uniform nb_env_paths) e  
 and dl_regex_model : regex_model -> dl = function
   | Alphas -> Mdl.Code.usage 0.4
   | Nums -> Mdl.Code.usage 0.3
@@ -876,10 +885,10 @@ type pairs_reads = (* result of reading a list of pairs of grids *)
 let read_pairs ?(env = doc_data0) (m : model) (pairs : Task.pair list) : pairs_reads result =
   Common.prof "Model.read_pairs" (fun () ->
   (* takes model, input env+docs, output docs *)
-  let dl_mi = dl_doc_model m.input_model in    
+  let dl_mi = dl_doc_model ~env:Any m.input_model in    
   (*let env_sig =
     signature_of_template m.input_pattern in *)
-  let dl_mo = dl_doc_model m.output_model in
+  let dl_mo = dl_doc_model ~env:m.input_model m.output_model in
   let| inputs_reads_reads =
     pairs
     |> list_map_result
