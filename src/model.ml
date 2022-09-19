@@ -89,6 +89,11 @@ type doc_path =
 and token_path =
   | ThisToken
 
+type doc_ctx = doc_path -> doc_path
+type token_ctx = token_path -> doc_path
+
+let doc_ctx0 = (fun p -> p)
+               
 type expr = doc_path Expr.expr (* using doc_paths as vars *)
         
 type doc_model =
@@ -120,57 +125,88 @@ type env = doc_data
 (* printing *)
 
 let xp_string (print : Xprint.t) (s : string) =
-  print#string s
+  print#string "<pre class=\"inline\">";
+  print#string s;
+  print#string "</pre>"
 let pp_string = Xprint.to_stdout xp_string
-         
-let rec xp_doc_path (print : Xprint.t) = function
-  | ThisDoc -> print#string "."
+
+let number_of_doc_path (p : doc_path) : int * token_path option =
+  (* mapping doc_paths to unique integers + residual token_path *)
+  let rec aux power2 acc = function
+    | ThisDoc -> power2 + acc, None
+    | Left p1 -> aux (2 * power2) acc p1
+    | Middle p1 -> power2 + acc, Some p1
+    | Right p1 -> aux (2 * power2) (power2 + acc) p1
+  in
+  aux 1 0 p
+              
+let xp_doc_path (print : Xprint.t) (p : doc_path) =
+  let n, tp_opt = number_of_doc_path p in
+  print#string "<span class=\"model-path\">";
+  ( match tp_opt with
+  | None -> print#string "doc"; print#int n
+  | Some ThisToken -> print#string "tok"; print#int n);
+  print#string "</span>"
+(*  | ThisDoc -> print#string "."
   | Left p1 -> print#string "0"; xp_doc_path print p1
   | Middle p1 -> print#string "@"; xp_token_path print p1
   | Right p1 -> print#string "1"; xp_doc_path print p1
 and xp_token_path print = function
-  | ThisToken -> ()
+  | ThisToken -> () *)
 let pp_doc_path = Xprint.to_stdout xp_doc_path
 
-let rec xp_doc_model (print : Xprint.t) (m : doc_model) =
-  xp_doc_model_aux print m;
-  print#string "|"
-and xp_doc_model_aux print = function
+let rec xp_doc_model (print : Xprint.t) ?(ctx : doc_ctx option) = function
   | Nil -> ()
   | Any ->
-     print#string "|";
-     print#string "*"
+     print#string "<span class=\"model-any\">*</span>"
   | Factor (l,t,r) ->
-     xp_doc_model_aux print l;
-     print#string "|";
-     xp_token_model print t;
-     xp_doc_model_aux print r
-and xp_token_model print = function
-  | Const s -> xp_string print s
-  | Regex re -> xp_regex_model print re
-  | Expr e -> Expr.xp_expr xp_doc_path print e
+     let ctx_l = ctx |> Option.map (fun ctx -> (fun p -> ctx (Left p))) in
+     let ctx_t = ctx |> Option.map (fun ctx -> (fun p -> ctx (Middle p))) in
+     let ctx_r = ctx |> Option.map (fun ctx -> (fun p -> ctx (Right p))) in
+     print#string "<span class=\"model-factor\">";
+     xp_doc_model print ?ctx:ctx_l l;
+     xp_token_model print ?ctx:ctx_t t;
+     xp_doc_model print ?ctx:ctx_r r;
+     print#string "</span>"
+and xp_token_model print ?(ctx : token_ctx option) = function
+  | Const s ->
+     print#string "<span class=\"model-const\">";
+     xp_string print s;
+     print#string "</span>"
+  | Regex re ->
+     let p_opt = ctx |> Option.map (fun ctx -> ctx ThisToken) in
+     print#string "<span class=\"model-regex\">";
+     print#string "?";
+     p_opt |> Option.iter (fun p -> xp_doc_path print p);
+     print#string " : ";
+     xp_regex_model print re;
+     print#string "</span>"
+  | Expr e ->
+     print#string "<span class=\"model-expr\">";
+     Expr.xp_expr xp_doc_path print e;
+     print#string "</span>"
 and xp_regex_model print = function
-  | Alphas -> print#string "?_Alphas_"
-  | Nums -> print#string "?_Nums_"
-  | Letters -> print#string "?_Letters_"
-let pp_doc_model = Xprint.to_stdout xp_doc_model
-let string_of_doc_model = Xprint.to_string xp_doc_model
+  | Alphas -> print#string "Alphas"
+  | Nums -> print#string "Digits"
+  | Letters -> print#string "Letters"
+let pp_doc_model m = Xprint.to_stdout (xp_doc_model ~ctx:doc_ctx0) m
+let string_of_doc_model m = Xprint.to_string (xp_doc_model ~ctx:doc_ctx0) m
                     
-let rec xp_doc_data (print : Xprint.t) (d : doc_data) =
-  xp_doc_data_aux print d;
-  print#string "|"
-and xp_doc_data_aux print = function
+let rec xp_doc_data (print : Xprint.t) = function
   | DNil -> ()
   | DAny s ->
-     print#string "|";
-     xp_string print s
+     print#string "<span class=\"data-any\">";
+     xp_string print s;
+     print#string "</span>"
   | DFactor (l,t,r) ->
-     xp_doc_data_aux print l;
-     print#string "|";
+     xp_doc_data print l;
      xp_token_data print t;
-     xp_doc_data_aux print r
+     xp_doc_data print r
 and xp_token_data print = function
-  | DToken s -> xp_string print s
+  | DToken s ->
+     print#string "<span class=\"data-token\">";
+     xp_string print s;
+     print#string "</span>"
 let pp_doc_data = Xprint.to_stdout xp_doc_data
 let string_of_doc_data = Xprint.to_string xp_doc_data
          
@@ -642,15 +678,14 @@ type doc_refinement =
   | RExpr of expr
 
 let xp_doc_refinement (print : Xprint.t) = function
-  | RNil -> print#string "nil"
+  | RNil -> print#string "<span class=\"model-nil\">∅</span>"
   | RFactor (l,tok,r) ->
-     xp_doc_model_aux print l;
-     print#string "|";
+     xp_doc_model print l;
      xp_token_model print tok;
-     xp_doc_model_aux print r;
-     print#string "|"
+     xp_doc_model print r
   | RToken tok -> xp_token_model print tok
-  | RExpr e -> Expr.xp_expr xp_doc_path print e
+  | RExpr e -> xp_token_model print (Expr e)
+     (* Expr.xp_expr xp_doc_path print e *)
 let pp_doc_refinement = Xprint.to_stdout xp_doc_refinement
            
 let apply_doc_refinement (r : doc_refinement) (p : doc_path) (m : doc_model) : doc_model =
@@ -734,7 +769,7 @@ let doc_refinements (m : doc_model) (dsr : docs_reads) : (doc_path * doc_refinem
                  (String.concat "; "
                     (List.map
                        (fun example_reads ->
-                         String.concat "|"
+                         String.concat "｜"
                            (List.map
                               (function (_, DAny s, _) -> s | _ -> assert false)
                               example_reads))
@@ -824,9 +859,9 @@ let model0 = { input_model = doc_model0;
                output_model = doc_model0 }
 
 let xp_model (print : Xprint.t) (m : model) =
-  xp_doc_model print m.input_model;
-  print#string " ==> ";
-  xp_doc_model print m.output_model
+  xp_doc_model print ~ctx:doc_ctx0 m.input_model;
+  print#string " ➜ ";
+  xp_doc_model print ~ctx:doc_ctx0 m.output_model
 let pp_model = Xprint.to_stdout xp_model
 let string_of_model = Xprint.to_string xp_model
 
@@ -927,8 +962,8 @@ type refinement =
 
 let xp_refinement (print : Xprint.t) = function
   | RInit -> print#string "init"
-  | Rinput (p,ri) -> print#string "IN "; xp_doc_path print p; print#string " <- "; xp_doc_refinement print ri
-  | Routput (p,ro) -> print#string "OUT "; xp_doc_path print p; print#string " <- "; xp_doc_refinement print ro
+  | Rinput (p,ri) -> print#string "IN "; xp_doc_path print p; print#string " ← "; xp_doc_refinement print ri
+  | Routput (p,ro) -> print#string "OUT "; xp_doc_path print p; print#string " ← "; xp_doc_refinement print ro
 let pp_refinement = Xprint.to_stdout xp_refinement
 let string_of_refinement = Xprint.to_string xp_refinement
 

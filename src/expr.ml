@@ -57,7 +57,7 @@ type 'var expr =
   | 'var expr Funct.t ]
 
 let rec xp_expr (xp_var : 'var Xprint.xp) (print : Xprint.t) : 'var expr -> unit = function
-  | `Ref p -> print#string "!_"; xp_var print p; print#string "_"
+  | `Ref p -> print#string "!"; xp_var print p
   | `Uppercase e1 -> print#string "uppercase("; xp_expr xp_var print e1; print#string ")"
   | `Lowercase e1 -> print#string "lowercase("; xp_expr xp_var print e1; print#string ")"
   | `Initial e1 -> print#string "initial("; xp_expr xp_var print e1; print#string ")"

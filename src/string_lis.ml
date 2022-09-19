@@ -15,7 +15,7 @@ let ( let> ) x f =
     (Dom_html.window##setTimeout
        (Js.wrap_callback f)
        0.)
-                   
+  
 (* ---- LIS -------- *)
         
 type 'a triple = 'a Model.triple
@@ -163,10 +163,10 @@ let xml_of_focus focus =
      [[Syntax.Kwd (Printf.sprintf "Task %s" focus.name)];
       [Syntax.Kwd (Printf.sprintf "DL = %f" focus.norm_dl)];
       [Syntax.Kwd (Printf.sprintf "DL = %.3f = %.3fm + %.3fd = (%.3fmi + %.3fmo) + (%.3fdi + %.3fdo) = %.3fi + %.3fo" md m d mi mo di do_ mdi mdo)];
-      [Syntax.Kwd (Html.pre (Model.string_of_doc_model focus.model.input_model))];
-      [Syntax.Kwd " ==> "];
-      [Syntax.Kwd (Html.pre (Model.string_of_doc_model focus.model.output_model))]]]
-
+      [Syntax.Kwd (Model.string_of_doc_model focus.model.input_model)];
+      [Syntax.Kwd " ➜ "];
+      [Syntax.Kwd (Model.string_of_doc_model focus.model.output_model)]]]
+  
 let html_of_word (w : arc_word) : Html.t = assert false
 
 let html_info_of_input (input : arc_input) : Html.input_info =
@@ -190,18 +190,16 @@ let html_of_suggestion ~input_dico = function
      "reset current task"
   | RefinedState (s,compressive) ->
      Html.span ~classe:(if compressive then "compressive" else "non-compressive")
-       (Jsutils.escapeHTML
-          (Printf.sprintf "(%f)  " s.norm_dl
-           ^ Model.string_of_refinement s.refinement))
+       (Printf.sprintf "(%f)  " s.norm_dl
+        ^ Model.string_of_refinement s.refinement)
 
-let html_of_doc (doc : string) = doc
+let html_of_doc_from_string (s : string) = Xprint.to_string Model.xp_string s
 
 let html_of_doc_from_data data =
-  let s = Model.string_of_doc_data data in
-  html_of_doc s
+  Model.string_of_doc_data data
 
 let html_doc_pair html_i html_o =
-  Html.pre html_i ^ " ==> " ^ Html.pre html_o
+  html_i ^ "<br/> ➜ <br/>" ^ html_o
     
 type col = ColExample | ColDescr | ColPred
 type cell =
@@ -213,8 +211,8 @@ type cell =
 let html_of_cell : cell -> Html.t = function
   | Example (si,so) ->
      html_doc_pair
-       (html_of_doc si)
-       (html_of_doc so)
+       (html_of_doc_from_string si)
+       (html_of_doc_from_string so)
   | Descr (ri,ro) ->
      let (_, d_i, dli : Model.doc_read) = ri in
      let (_, d_o, dlo : Model.doc_read) = ro in
@@ -228,7 +226,7 @@ let html_of_cell : cell -> Html.t = function
           (fun (d_i,so) ->
             html_doc_pair
               (html_of_doc_from_data d_i)
-              (html_of_doc so))
+              (html_of_doc_from_string so))
           l_di_so)
   | Error msg -> Jsutils.escapeHTML msg
         

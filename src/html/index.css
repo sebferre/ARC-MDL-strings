@@ -1,43 +1,62 @@
 
-.arc-col0 {
-    background-color: black;
-}
-.arc-col1 {
-    background-color: royalblue;
-}
-.arc-col2 {
-    background-color: red;
-}
-.arc-col3 {
-    background-color: limegreen;
-}
-.arc-col4 {
-    background-color: yellow;
-}
-.arc-col5 {
-    background-color: lightgrey;
-}
-.arc-col6 {
-    background-color: magenta;
-}
-.arc-col7 {
-    background-color: orange;
-}
-.arc-col8 {
-    background-color: cyan;
-}
-.arc-col9 {
-    background-color: brown;
+pre.inline {
+    display: inline;
+    padding: 0px;
+    border: 0px;
+    background-color: transparent;
 }
 
-.arc-grid td {
-    border-color: grey;
-    height: 20px;
-    width: 20px;
+.model-any {
+    border: 1px solid #ccc;
+    border-radius: 2px;
+    background-color: #eee;
+    padding: 0px 4px 0px 4px;
 }
 
-.arc-grid {
-    display: inline-block;
+.model-nil {
+}
+
+.model-factor {
+}
+
+.model-path {
+    font-style: italic;
+    color: red;
+}
+
+.model-const {
+    border: 1px solid #ccc;
+    border-radius: 2px;
+    background-color: #bbffff;
+    padding: 0px 4px 0px 4px;
+}
+
+.model-regex {
+    border: 1px solid #ccc;
+    border-radius: 2px;
+    background-color: #ffbbff;
+    padding: 0px 4px 0px 4px;
+}
+
+.model-expr {
+    border: 1px solid #ccc;
+    border-radius: 2px;
+    background-color: #ffffbb;
+    padding: 0px 4px 0px 4px;
+}
+
+.data-any {
+    border: 1px solid #ccc;
+    border-radius: 2px;
+    background-color: #eee;
+    padding: 0px 4px 0px 4px;
+}
+
+.data-token {
+    border: 1px solid #ccc;
+    border-radius: 2px;
+    background-color: #fff;
+    padding: 0px 4px 0px 4px;
 }
 
 .compressive {
