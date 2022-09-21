@@ -29,8 +29,8 @@ type arc_state =
     refinement : Model.refinement; (* previous refinement *)
     model : Model.model; (* current model *)
     prs : Model.pairs_reads; (* pair reads *)
-    dsri : Model.docs_reads; (* input reads *)
-    dsro : Model.docs_reads; (* output reads *)
+    dsri : Model.rows_reads; (* input reads *)
+    dsro : Model.rows_reads; (* output reads *)
     dls : Mdl.bits Model.triple Model.triple; (* DL components *)
     norm_dls : Mdl.bits Model.triple Model.triple; (* normalized DL components *)
     norm_dl : Mdl.bits; (* global normalized DL *)
@@ -64,13 +64,13 @@ let rec state_of_model (name : string) (task : Task.task) norm_dl_model_data (re
 let name0 = "default: name + birthdate"
 let task0 =
   let open Task in
-  { train = [ {input = "marie Dupont - 19/4/2000"; output = "M. Dupont, 2000"};
-              {input = "Jean Martin - 12/8/1999"; output = "J. Martin, 1999"} ];
-    test = [ {input = "Marc Bonpain - 13/12/2002"; output = "M. Bonpain, 2002"} ] }
+  { train = [ {input = ["marie Dupont - 19/4/2000"]; output = ["M. Dupont, 2000"]};
+              {input = ["Jean Martin - 12/8/1999"]; output = ["J. Martin, 1999"]} ];
+    test = [ {input = ["Marc Bonpain - 13/12/2002"]; output = ["M. Bonpain, 2002"]} ] }
 
 let initial_focus (name : string) (task : Task.task) : arc_focus =
   let norm_dl_model_data = Model.make_norm_dl_model_data () in
-  match state_of_model name task norm_dl_model_data Model.RInit Model.model0 with
+  match state_of_model name task norm_dl_model_data Model.RInit (Model.init_model task) with
   | Result.Ok s -> s
   | Result.Error exn -> raise exn
 
@@ -163,9 +163,9 @@ let xml_of_focus focus =
      [[Syntax.Kwd (Printf.sprintf "Task %s" focus.name)];
       [Syntax.Kwd (Printf.sprintf "DL = %f" focus.norm_dl)];
       [Syntax.Kwd (Printf.sprintf "DL = %.3f = %.3fm + %.3fd = (%.3fmi + %.3fmo) + (%.3fdi + %.3fdo) = %.3fi + %.3fo" md m d mi mo di do_ mdi mdo)];
-      [Syntax.Kwd (Model.string_of_doc_model focus.model.input_model)];
+      [Syntax.Kwd (Model.string_of_row_model focus.model.input_model)];
       [Syntax.Kwd " ➜ "];
-      [Syntax.Kwd (Model.string_of_doc_model focus.model.output_model)]]]
+      [Syntax.Kwd (Model.string_of_row_model focus.model.output_model)]]]
   
 let html_of_word (w : arc_word) : Html.t = assert false
 
@@ -193,40 +193,42 @@ let html_of_suggestion ~input_dico = function
        (Printf.sprintf "(%f)  " s.norm_dl
         ^ Model.string_of_refinement s.refinement)
 
-let html_of_doc_from_string (s : string) = Xprint.to_string Model.xp_string s
+let html_of_row_from_string_list (ls : string list) =
+  String.concat "</br>"
+    (List.map (Xprint.to_string Model.xp_string) ls)
 
-let html_of_doc_from_data data =
-  Model.string_of_doc_data data
+let html_of_row_from_data data =
+  Model.string_of_row_data data
 
-let html_doc_pair html_i html_o =
+let html_row_pair html_i html_o =
   html_i ^ "<br/> ➜ <br/>" ^ html_o
     
 type col = ColExample | ColDescr | ColPred
 type cell =
-  | Example of string * string
-  | Descr of Model.doc_read * Model.doc_read
-  | Pred of string * (Model.doc_data * string) list (* expected grid, all preds *)
+  | Example of string list * string list
+  | Descr of Model.row_read * Model.row_read
+  | Pred of string list * (Model.row_data * string list) list (* expected grid, all preds *)
   | Error of string
                                     
 let html_of_cell : cell -> Html.t = function
-  | Example (si,so) ->
-     html_doc_pair
-       (html_of_doc_from_string si)
-       (html_of_doc_from_string so)
+  | Example (lsi,lso) ->
+     html_row_pair
+       (html_of_row_from_string_list lsi)
+       (html_of_row_from_string_list lso)
   | Descr (ri,ro) ->
-     let (_, d_i, dli : Model.doc_read) = ri in
-     let (_, d_o, dlo : Model.doc_read) = ro in
-     html_doc_pair
-       (html_of_doc_from_data d_i)
-       (html_of_doc_from_data d_o)
+     let (_, d_i, dli : Model.row_read) = ri in
+     let (_, d_o, dlo : Model.row_read) = ro in
+     html_row_pair
+       (html_of_row_from_data d_i)
+       (html_of_row_from_data d_o)
      ^ Printf.sprintf "<br/>DL = %.3f = %.3fi + %.3fo" (dli +. dlo) dli dlo
   | Pred (expected_so, l_di_so) ->
      String.concat ""
        (List.map
-          (fun (d_i,so) ->
-            html_doc_pair
-              (html_of_doc_from_data d_i)
-              (html_of_doc_from_string so))
+          (fun (d_i,lso) ->
+            html_row_pair
+              (html_of_row_from_data d_i)
+              (html_of_row_from_string_list lso))
           l_di_so)
   | Error msg -> Jsutils.escapeHTML msg
         
@@ -255,10 +257,10 @@ let w_results : (col, unit, cell) Widget_table.widget =
 
 
 let render_place place k =
-  let get_pred ~test m si so =
-    match Model.apply_model m si with
+  let get_pred ~test m lsi lso =
+    match Model.apply_model m lsi with
     | Result.Ok [] -> Error "No valid prediction"
-    | Result.Ok l_di_sopred -> Pred (so, if test then l_di_sopred else [List.hd l_di_sopred])
+    | Result.Ok l_di_sopred -> Pred (lso, if test then l_di_sopred else [List.hd l_di_sopred])
     | Result.Error exn -> Error (Printexc.to_string exn)
   in
  Jsutils.jquery "#lis-suggestions" (fun elt_lis ->
@@ -270,22 +272,22 @@ let render_place place k =
       let l_bindings =
         List.map
           (fun pair ->
-            let ({input=si; output=so} : Task.pair) = pair in
-            let pred = get_pred ~test:true ext.model si so in
-            [ ColExample, Example (si,so);
+            let ({input=lsi; output=lso} : Task.pair) = pair in
+            let pred = get_pred ~test:true ext.model lsi lso in
+            [ ColExample, Example (lsi,lso);
               ColPred, pred ])
           ext.task.test in
       let l_bindings =
         List.fold_right2
           (fun pair reads l_bindings ->
-            let ({input=si; output=so} : Task.pair) = pair in
+            let ({input=lsi; output=lso} : Task.pair) = pair in
             let descr =
               match reads with
               | (in_r,out_r,dl)::_ -> Descr (in_r,out_r) (* using only first read *)
               | [] -> Error "No valid description" in
-            let pred = get_pred ~test:false ext.model si so in
+            let pred = get_pred ~test:false ext.model lsi lso in
             let row =
-              [ ColExample, Example (si,so);
+              [ ColExample, Example (lsi,lso);
                 ColDescr, descr;
                 ColPred, pred ] in
             row::l_bindings)
