@@ -801,25 +801,38 @@ let map_reads (f : 'a -> 'b) (reads : 'a list list) : 'b list list  =
       List.map f example_reads)
     reads
 
-let inter_union_reads (* to find things common to all examples, in at least one parse of each example *)
-      ~(init : 'b) (* neutral value for union *)
-      ~(union : 'b -> 'a -> 'b) (* taking into account another parse of the same example *)
-      ~(inter : 'b -> 'b -> 'b) (* finding what is in common between two examples *)
-      (reads : 'a list list) : 'b =
+let inter_union_reads
+      (f : 'read -> 'r list)
+      (reads : 'read list list) : ('r, 'read list) Mymap.t =
+  (* given a function extracting refinement information [type 'r] from each read,
+     return a set of such ref-info, each mapped to the dl-shortest reads supporting it *)
   let process_example reads =
     List.fold_left
-      (fun res read -> union res read)
-      init reads in
+      (fun res read ->
+        List.fold_left
+          (fun res r ->
+            if Mymap.mem r res
+            then res
+            else Mymap.add r read res)
+          res (f read))
+      Mymap.empty reads in
   match reads with
   | [] -> assert false
   | example0_reads :: other_reads ->
-     let res0 = process_example example0_reads in
+     let res0 =
+       process_example example0_reads
+       |> Mymap.map (fun best_read -> [best_read]) in
      List.fold_left
        (fun res exampleI_reads ->
          let resI = process_example exampleI_reads in
-         inter res resI)
+         Mymap.merge
+           (fun r best_reads_opt best_readI_opt ->
+             match best_reads_opt, best_readI_opt with
+             | Some best_reads, Some best_readI -> Some (best_readI::best_reads)
+             | _ -> None)
+           res resI)
        res0 other_reads
-  
+
 let row_refinements (lm : row_model) (rsr : rows_reads) : (row_path * cell_refinement * row_model) Myseq.t =
   let reads = (* replacing env's with expression index's over them *)
     map_reads
@@ -843,37 +856,23 @@ let row_refinements (lm : row_model) (rsr : rows_reads) : (row_path * cell_refin
     match m with
     | Nil -> Myseq.empty
     | Any ->
-       let is_nil, is_not_nil, common_strings =
+       let r_best_read : ([`IsNil | `IsNotNil | `CommonStr of string], _) Mymap.t =
          inter_union_reads
-           ~init:(false, false, Bintree.empty)
-           ~union:(fun (is_nil, is_not_nil, common_strings) (_,data,_) ->
+           (fun (_,data,_) ->
              let s = cell_of_cell_data data in
-             is_nil || s = "",
-             is_not_nil || s <> "",
-             if s = "" then common_strings else Bintree.add s common_strings)
-           ~inter:(fun (is_nil1, is_not_nil1, common_strings1)
-                       (is_nil2, is_not_nil2, common_strings2) ->
-             is_nil1 && is_nil2,
-             is_not_nil1 && is_not_nil2,
-             Bintree.inter common_strings1 common_strings2)
-           reads in       
-       myseq_cons_if is_nil
-         (ThisDoc, RNil)
-         (myseq_concat_if is_not_nil
-            (let* re = Myseq.from_list [Alphas; Nums; Letters] in
-             Myseq.return (ThisDoc, RFactor (Any, Regex re, Any)))
-            ((*let _ =
-               print_endline
-                 (String.concat "; "
-                    (List.map
-                       (fun example_reads ->
-                         String.concat "｜"
-                           (List.map
-                              (function (_, DAny s, _) -> s | _ -> assert false)
-                              example_reads))
-                       reads)) in *)
-             let* s = Myseq.from_list (Bintree.elements common_strings) in (* TODO: add a to_seq in bintree.ml *)
-             Myseq.return (ThisDoc, RFactor (Nil, Const s, Nil))))
+             let rs = if s = "" then [`IsNil] else [] in
+             let rs = if s <> "" then `IsNotNil::rs else rs in
+             if s <> "" then `CommonStr s::rs else rs)
+           reads in
+       let* r, _ = Mymap.to_seq r_best_read in
+       ( match r with
+       | `IsNil ->
+          Myseq.return (ThisDoc, RNil)
+       | `IsNotNil ->
+          let* re = Myseq.from_list [Alphas; Nums; Letters] in
+          Myseq.return (ThisDoc, RFactor (Any, Regex re, Any))
+       | `CommonStr s ->
+          Myseq.return (ThisDoc, RFactor (Nil, Const s, Nil)) )
     | Factor (l,t,r) ->
        Myseq.concat
          [ fold_token t
@@ -901,46 +900,37 @@ let row_refinements (lm : row_model) (rsr : rows_reads) : (row_path * cell_refin
     match m with
     | Const s -> Myseq.empty
     | Regex re ->
-       let re'_ok_init =
+       let re'_candidates =
          match re with
-         | Alphas -> [Nums, false; Letters, false]
+         | Alphas -> [Nums; Letters]
          | _ -> [] in
-       let (common_strings : string Bintree.t), (re'_ok : (regex_model * bool) list), (exprs : row_path Expr.exprset list) =
+       let r_best_read : ([`CommonStr of string | `RE of regex_model | `Expr of expr], _) Mymap.t =
          inter_union_reads
-           ~init:(Bintree.empty, re'_ok_init, [])
-           ~union:(fun (common_strings, re'_ok, exprs) (idx,data,_) ->
+           (fun (idx,data,_) ->
              let s = token_of_token_data data in
              let es = Expr.index_lookup (`String s) idx in
-             (if s = "" then common_strings else Bintree.add s common_strings),
-             List.map
-               (fun (re',ok) ->
-                 (re', ok || regexp_match_full (re_of_regexp re') s))
-               re'_ok,
-             (if es = [] then exprs else es::exprs))
-           ~inter:(fun (common_strings1, re'_ok1, exprs1) (common_strings2, re'_ok2, exprs2) ->
-             Bintree.inter common_strings1 common_strings2,
-             List.map2
-               (fun (re'1,ok1) (re'2,ok2) ->
-                 assert (re'1 = re'2);
-                 (re'1, ok1 && ok2))
-               re'_ok1 re'_ok2,
-             Expr.exprset_inter_list exprs1 exprs2)
+             let rs = if s <> "" then [`CommonStr s] else [] in
+             let rs =
+               List.fold_left
+                 (fun rs re' ->
+                   if regexp_match_full (re_of_regexp re') s
+                   then `RE re' :: rs
+                   else rs)
+                 rs re'_candidates in
+             let rs =
+               Myseq.fold_left
+                 (fun rs e -> `Expr e :: rs)
+                 rs (Expr.exprset_to_seq es) in
+             rs)
            reads in
-       Myseq.concat
-         [ (* constant strings *)
-           (let* s = Myseq.from_list (Bintree.elements common_strings) in (* TODO: add a to_seq in bintree.ml *)
-            Myseq.return (ThisToken, RToken (Const s)));
-           
-           (* regexp specialization *)
-           (let* re', ok = Myseq.from_list re'_ok in
-            if ok
-            then Myseq.return (ThisToken, RToken (Regex re'))
-            else Myseq.empty);
-
-           (* expressions *)
-           (let* es = Myseq.from_list exprs in
-            let* e = Expr.exprset_to_seq es in
-            Myseq.return (ThisToken, RExpr e)) ]
+       let* r, _ = Mymap.to_seq r_best_read in
+       ( match r with
+         | `CommonStr s ->
+            Myseq.return (ThisToken, RToken (Const s))
+         | `RE re' ->
+            Myseq.return (ThisToken, RToken (Regex re'))
+         | `Expr e ->
+            Myseq.return (ThisToken, RExpr e) )
     | Expr e -> Myseq.empty
   in
   let* p, r = fold_row lm reads in
