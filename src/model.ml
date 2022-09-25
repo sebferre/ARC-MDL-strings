@@ -753,19 +753,13 @@ let write_row ~(env : env) (m : row_model) : (string list, exn) Result.t = Commo
 (* refinements *)
 
 type cell_refinement =
-  | RNil
-  | RFactor of cell_model * token_model * cell_model (* at cell Any *)
+  | RCell of cell_model (* cell specialization *)
   | RToken of token_model (* token specialization *)
-  | RExpr of expr
 
 let xp_cell_refinement (print : Xprint.t) = function
-  | RNil -> print#string "<span class=\"model-nil\">∅</span>"
-  | RFactor (l,tok,r) ->
-     xp_cell_model print l;
-     xp_token_model print tok;
-     xp_cell_model print r
+  | RCell Nil -> print#string "<span class=\"model-nil\">∅</span>"
+  | RCell cell -> xp_cell_model print cell
   | RToken tok -> xp_token_model print tok
-  | RExpr e -> xp_token_model print (Expr e)
 let pp_cell_refinement = Xprint.to_stdout xp_cell_refinement
            
 let apply_cell_refinement (r : cell_refinement) (p : row_path) (lm : row_model) : row_model =
@@ -775,23 +769,16 @@ let apply_cell_refinement (r : cell_refinement) (p : row_path) (lm : row_model) 
        (try list_update (aux_cell p) i lm
         with Not_found -> assert false)
   and aux_cell p m =
-    match p, m with
-    | ThisDoc, Any ->
-       (match r with
-        | RNil -> Nil
-        | RFactor (l,tok,r) -> Factor (l, tok, r)
-        | _ -> assert false)
-    | Left p1, Factor (l,t,r) -> Factor (aux_cell p1 l, t, r)
-    | Middle p1, Factor (l, t, r) -> Factor (l, aux_token p1 t, r)
-    | Right p1, Factor (l, t, r) -> Factor (l, t, aux_cell p1 r)
+    match p, m, r with
+    | ThisDoc, Any, RCell cell -> cell
+    | Left p1, Factor (l,t,r), _ -> Factor (aux_cell p1 l, t, r)
+    | Middle p1, Factor (l, t, r), _ -> Factor (l, aux_token p1 t, r)
+    | Right p1, Factor (l, t, r), _ -> Factor (l, t, aux_cell p1 r)
     | _ -> assert false
   and aux_token p m =
-    match p, m with
-    | ThisToken, _ ->
-       (match r, m with
-        | RToken tok, Regex _ -> tok
-        | RExpr e, _ -> Expr e
-        | _ -> assert false)
+    match p, m, r with
+    | ThisToken, Regex _, RToken tok -> tok
+    | _ -> assert false
   in
   aux_row p lm
 
@@ -890,11 +877,12 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
              rs)
            reads in
        let* r_info, best_reads = Mymap.to_seq r_best_reads in
-       let r, m' =
+       let m' =
          match r_info with
-         | `IsNil -> RNil, Nil
-         | `RE re -> RFactor (Any, Regex re, Any), Factor (Any, Regex re, Any)
-         | `CommonStr s -> RFactor (Nil, Const s, Nil), Factor (Nil, Const s, Nil) in
+         | `IsNil -> Nil
+         | `RE re -> Factor (Any, Regex re, Any)
+         | `CommonStr s -> Factor (Nil, Const s, Nil) in
+       let r = RCell m' in
        let encoder_m' = cell_encoder m' in
        let dl_m' = dl_cell_model ~nb_env_paths m' in
        let dl' =
@@ -956,11 +944,12 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
              rs)
            reads in
        let* r_info, best_reads = Mymap.to_seq r_best_reads in
-       let r, m' =
+       let m' =
          match r_info with
-         | `CommonStr s -> RToken (Const s), Const s
-         | `RE re' -> RToken (Regex re'), Regex re'
-         | `Expr e -> RExpr e, Expr e in
+         | `CommonStr s -> Const s
+         | `RE re' -> Regex re'
+         | `Expr e -> Expr e in
+       let r = RToken m' in
        let encoder_m' = token_encoder m' in
        let dl_m' = dl_token_model ~nb_env_paths m' in
        let dl' =
