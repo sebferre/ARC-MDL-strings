@@ -9,7 +9,7 @@ let alpha = def_param "alpha" 10. string_of_float
 let max_nb_parse = def_param "max_nb_parse" 256 string_of_int (* max nb of considered doc parses *)
 let max_nb_reads = def_param "max_nb_doc_reads" 3 string_of_int (* max nb of selected doc reads, passed to the next stage *)
 let max_parse_dl_factor = def_param "max_parse_dl_factor" 3. string_of_float (* compared to best parse, how much longer alternative parses can be *)
-let max_refinements = def_param "max_refinements" 200 string_of_int (* max nb of considered refinements *)
+let max_refinements = def_param "max_refinements" 100 string_of_int (* max nb of considered refinements *)
 
 
 (* utilities *)
@@ -681,13 +681,13 @@ and cell_encoder_range : cell_model -> Range.t = function
 and token_encoder_range : token_model -> Range.t = function
   | Const s -> Range.make_exact (String.length s)
   | Regex _ -> Range.make_open 1
-  | Expr _ -> assert false
+  | Expr _ -> Range.make_open 1
 and token_encoder : token_model -> token_data encoder = function
   | Const _ -> (function DToken _ -> 0.)
   | Regex re ->
      let enc_re = regex_encoder re in
      (function DToken s -> enc_re s)
-  | Expr _ -> assert false
+  | Expr _ -> (fun _ -> 0.) (* nothing to code, evaluated *)
 and regex_encoder : regex_model -> string encoder = function
   | Alphas -> dl_char_plus make_alpha_prequential
   | Nums -> dl_char_plus make_num_prequential
@@ -802,18 +802,19 @@ let map_reads (f : 'a -> 'b) (reads : 'a list list) : 'b list list  =
     reads
 
 let inter_union_reads
-      (f : 'read -> 'r list)
-      (reads : 'read list list) : ('r, 'read list) Mymap.t =
+      (f : 'read -> ('r * 'd) list)
+      (reads : 'read list list)
+    : ('r, ('read * 'd) list) Mymap.t =
   (* given a function extracting refinement information [type 'r] from each read,
-     return a set of such ref-info, each mapped to the dl-shortest reads supporting it *)
+     return a set of such ref-info, each mapped to the dl-shortest reads supporting it, along with new data *)
   let process_example reads =
     List.fold_left
       (fun res read ->
         List.fold_left
-          (fun res r ->
+          (fun res (r,data') ->
             if Mymap.mem r res
             then res
-            else Mymap.add r read res)
+            else Mymap.add r (read,data') res)
           res (f read))
       Mymap.empty reads in
   match reads with
@@ -833,7 +834,8 @@ let inter_union_reads
            res resI)
        res0 other_reads
 
-let row_refinements (lm : row_model) (rsr : rows_reads) : (row_path * cell_refinement * row_model) Myseq.t =
+let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows_reads) : (row_path * cell_refinement * row_model) Myseq.t =
+  (* NOTE: dl_M does not matter for ranking because invariant of parsing and refinement *)
   let reads = (* replacing env's with expression index's over them *)
     map_reads
       (fun (env,data,dl) ->
@@ -850,29 +852,57 @@ let row_refinements (lm : row_model) (rsr : rows_reads) : (row_path * cell_refin
                  (env, d_i, dl))
                reads in
            fold_cell m m_reads
-           |> Myseq.map (fun (p,r) -> (Col (i,p), r)))
+           |> Myseq.map (fun (p,r,dl') -> (Col (i,p), r, dl')))
          lm)
   and fold_cell m reads =
     match m with
     | Nil -> Myseq.empty
     | Any ->
-       let r_best_read : ([`IsNil | `IsNotNil | `CommonStr of string], _) Mymap.t =
+       let encoder_m = cell_encoder m in
+       let dl_m = dl_cell_model ~nb_env_paths m in
+       let r_best_reads : ([`IsNil | `RE of regex_model | `CommonStr of string], _) Mymap.t =
          inter_union_reads
            (fun (_,data,_) ->
              let s = cell_of_cell_data data in
-             let rs = if s = "" then [`IsNil] else [] in
-             let rs = if s <> "" then `IsNotNil::rs else rs in
-             if s <> "" then `CommonStr s::rs else rs)
+             let rs = if s = "" then [(`IsNil, DNil)] else [] in
+             let rs =
+               if s <> ""
+               then
+                 List.fold_left
+                   (fun rs re ->
+                     let best_len, (sl, data', sr as best_slice) =
+                       Myseq.fold_left
+                         (fun (best_len, best_slide as best) (_, data', _ as slice) ->
+                           let len = token_data_length data' in
+                           if len > best_len
+                           then (len, slice)
+                           else best)
+                         (0, ("", DToken "", "")) (token_parse (Regex re) s) in
+                     if best_len > 0
+                     then (`RE re, DFactor (DAny sl, data', DAny sr)) :: rs
+                     else rs)
+                   rs [Alphas; Nums; Letters]
+               else rs in
+             let rs =
+               if s <> ""
+               then (`CommonStr s, DFactor (DNil, DToken s, DNil)) :: rs
+               else rs in
+             rs)
            reads in
-       let* r, _ = Mymap.to_seq r_best_read in
-       ( match r with
-       | `IsNil ->
-          Myseq.return (ThisDoc, RNil)
-       | `IsNotNil ->
-          let* re = Myseq.from_list [Alphas; Nums; Letters] in
-          Myseq.return (ThisDoc, RFactor (Any, Regex re, Any))
-       | `CommonStr s ->
-          Myseq.return (ThisDoc, RFactor (Nil, Const s, Nil)) )
+       let* r_info, best_reads = Mymap.to_seq r_best_reads in
+       let r, m' =
+         match r_info with
+         | `IsNil -> RNil, Nil
+         | `RE re -> RFactor (Any, Regex re, Any), Factor (Any, Regex re, Any)
+         | `CommonStr s -> RFactor (Nil, Const s, Nil), Factor (Nil, Const s, Nil) in
+       let encoder_m' = cell_encoder m' in
+       let dl_m' = dl_cell_model ~nb_env_paths m' in
+       let dl' =
+         dl_M -. dl_m +. dl_m'
+         +. Mdl.sum best_reads
+              (fun ((_,data,dl_D), data') ->
+                dl_D -. encoder_m data +. encoder_m' data') in
+       Myseq.return (ThisDoc, r, dl')
     | Factor (l,t,r) ->
        Myseq.concat
          [ fold_token t
@@ -881,60 +911,72 @@ let row_refinements (lm : row_model) (rsr : rows_reads) : (row_path * cell_refin
                  | (idx, DFactor (_,dt,_), l) -> (idx, dt, l)
                  | _ -> assert false)
                 reads)
-           |> Myseq.map (fun (p,r) -> Middle p, r);
+           |> Myseq.map (fun (p,r,dl') -> Middle p, r, dl');
            fold_cell l
              (map_reads
                 (function
                  | (idx, DFactor (dl,_,_), l) -> (idx, dl, l)
                  | _ -> assert false)
                 reads)
-           |> Myseq.map (fun (p,r) -> Left p,r);
+           |> Myseq.map (fun (p,r,dl') -> Left p, r, dl');
            fold_cell r
              (map_reads
                 (function
                  | (idx, DFactor (_,_,dr), l) -> (idx, dr, l)
                  | _ -> assert false)
                 reads)
-           |> Myseq.map (fun (p,r) -> Right p, r) ]
+           |> Myseq.map (fun (p,r,dl') -> Right p, r, dl') ]
   and fold_token (m : token_model) reads =
     match m with
     | Const s -> Myseq.empty
     | Regex re ->
+       let encoder_m = token_encoder m in
+       let dl_m = dl_token_model ~nb_env_paths m in
        let re'_candidates =
          match re with
          | Alphas -> [Nums; Letters]
          | _ -> [] in
-       let r_best_read : ([`CommonStr of string | `RE of regex_model | `Expr of expr], _) Mymap.t =
+       let r_best_reads : ([`CommonStr of string | `RE of regex_model | `Expr of expr], _) Mymap.t =
          inter_union_reads
            (fun (idx,data,_) ->
              let s = token_of_token_data data in
              let es = Expr.index_lookup (`String s) idx in
-             let rs = if s <> "" then [`CommonStr s] else [] in
+             let rs = if s <> "" then [(`CommonStr s, DToken s)] else [] in
              let rs =
                List.fold_left
                  (fun rs re' ->
                    if regexp_match_full (re_of_regexp re') s
-                   then `RE re' :: rs
+                   then (`RE re', DToken s) :: rs
                    else rs)
                  rs re'_candidates in
              let rs =
                Myseq.fold_left
-                 (fun rs e -> `Expr e :: rs)
+                 (fun rs e -> (`Expr e, DToken s) :: rs)
                  rs (Expr.exprset_to_seq es) in
              rs)
            reads in
-       let* r, _ = Mymap.to_seq r_best_read in
-       ( match r with
-         | `CommonStr s ->
-            Myseq.return (ThisToken, RToken (Const s))
-         | `RE re' ->
-            Myseq.return (ThisToken, RToken (Regex re'))
-         | `Expr e ->
-            Myseq.return (ThisToken, RExpr e) )
+       let* r_info, best_reads = Mymap.to_seq r_best_reads in
+       let r, m' =
+         match r_info with
+         | `CommonStr s -> RToken (Const s), Const s
+         | `RE re' -> RToken (Regex re'), Regex re'
+         | `Expr e -> RExpr e, Expr e in
+       let encoder_m' = token_encoder m' in
+       let dl_m' = dl_token_model ~nb_env_paths m' in
+       let dl' =
+         dl_M -. dl_m +. dl_m'
+         +. Mdl.sum best_reads
+              (fun ((_,data,dl_D), data') ->
+                dl_D -. encoder_m data +. encoder_m' data') in         
+       Myseq.return (ThisToken, r, dl')
     | Expr e -> Myseq.empty
   in
-  let* p, r = fold_row lm reads in
-  Myseq.return (p, r, apply_cell_refinement r p lm)
+  let* p, r, dl' =
+    fold_row lm reads
+    |> Myseq.sort (fun (_,_,dl1) (_,_,dl2) -> dl_compare dl1 dl2)
+    |> Myseq.slice ~limit:!max_refinements in
+  let m' = apply_cell_refinement r p lm in
+  Myseq.return (p, r, m')
 
 
 (* examples  / pairs *)
@@ -1065,9 +1107,9 @@ let apply_refinement (r : refinement) (m : model) : (refinement * model) result 
 
 let model_refinements (last_r : refinement) (m : model) (dsri : rows_reads) (dsro : rows_reads) : (refinement * model) Myseq.t =
   Myseq.concat (* TODO: rather order by estimated dl *)
-    [ (let* p, ri, mi = row_refinements m.input_model dsri in
+    [ (let* p, ri, mi = row_refinements ~nb_env_paths:0 m.input_model dsri in
        Myseq.return (Rinput (p,ri), {m with input_model = mi}));
-      (let* p, ro, mo = row_refinements m.output_model dsro in
+      (let* p, ro, mo = row_refinements ~nb_env_paths:(dl_row_model_env_stats m.input_model) m.output_model dsro in
        Myseq.return (Routput (p,ro), {m with output_model = mo})) ]
 
   
