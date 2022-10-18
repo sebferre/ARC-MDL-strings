@@ -821,7 +821,7 @@ let inter_union_reads
            res resI)
        res0 other_reads
 
-let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows_reads) : (row_path * cell_refinement * row_model) Myseq.t =
+let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows_reads) : (row_path * cell_refinement * dl * row_model) Myseq.t =
   (* NOTE: dl_M does not matter for ranking because invariant of parsing and refinement *)
   let reads = (* replacing env's with expression index's over them *)
     map_reads
@@ -887,9 +887,9 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
        let dl_m' = dl_cell_model ~nb_env_paths m' in
        let dl' =
          dl_M -. dl_m +. dl_m'
-         +. Mdl.sum best_reads
-              (fun ((_,data,dl_D), data') ->
-                dl_D -. encoder_m data +. encoder_m' data') in
+         +. !alpha *. Mdl.sum best_reads
+                        (fun ((_,data,dl_D), data') ->
+                          dl_D -. encoder_m data +. encoder_m' data') in
        Myseq.return (ThisDoc, r, dl')
     | Factor (l,t,r) ->
        Myseq.concat
@@ -954,9 +954,9 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
        let dl_m' = dl_token_model ~nb_env_paths m' in
        let dl' =
          dl_M -. dl_m +. dl_m'
-         +. Mdl.sum best_reads
-              (fun ((_,data,dl_D), data') ->
-                dl_D -. encoder_m data +. encoder_m' data') in         
+         +. !alpha *. Mdl.sum best_reads
+                        (fun ((_,data,dl_D), data') ->
+                          dl_D -. encoder_m data +. encoder_m' data') in         
        Myseq.return (ThisToken, r, dl')
     | Expr e -> Myseq.empty
   in
@@ -965,7 +965,7 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
     |> Myseq.sort (fun (_,_,dl1) (_,_,dl2) -> dl_compare dl1 dl2)
     |> Myseq.slice ~limit:!max_refinements in
   let m' = apply_cell_refinement r p lm in
-  Myseq.return (p, r, m')
+  Myseq.return (p, r, dl', m')
 
 
 (* examples  / pairs *)
@@ -1076,30 +1076,36 @@ let apply_model ?(env = []) (m : model) (row_i : string list) : ((row_data * str
   
 type refinement =
   | RInit
-  | Rinput of row_path * cell_refinement
-  | Routput of row_path * cell_refinement
+  | Rinput of row_path * cell_refinement * dl (* estimated result DL *)
+  | Routput of row_path * cell_refinement * dl (* estimated result DL *)
 
-let xp_refinement (print : Xprint.t) = function
+let rec xp_refinement (print : Xprint.t) = function
   | RInit -> print#string "init"
-  | Rinput (p,ri) -> print#string "IN "; xp_row_path print p; print#string " ← "; xp_cell_refinement print ri
-  | Routput (p,ro) -> print#string "OUT "; xp_row_path print p; print#string " ← "; xp_cell_refinement print ro
+  | Rinput (p,ri,dl') -> xp_refinement_aux print " In." p ri dl' "i"
+  | Routput (p,ro, dl') -> xp_refinement_aux print " Out." p ro dl' "o"
+and xp_refinement_aux print in_out p r dl' i_o =
+  print#string (Printf.sprintf " / ~%.3f%s)  " dl' i_o);
+  print#string in_out;
+  xp_row_path print p;
+  print#string " ← ";
+  xp_cell_refinement print r
 let pp_refinement = Xprint.to_stdout xp_refinement
 let string_of_refinement = Xprint.to_string xp_refinement
 
 let apply_refinement (r : refinement) (m : model) : (refinement * model) result =
   match r with
   | RInit -> Result.Error (Failure "apply_refinement")
-  | Rinput (p,ri) ->
+  | Rinput (p,ri,dl') ->
      Result.Ok (r, {m with input_model = apply_cell_refinement ri p m.input_model})
-  | Routput (p,ro) ->
+  | Routput (p,ro,dl') ->
      Result.Ok (r, {m with output_model = apply_cell_refinement ro p m.output_model})
 
-let model_refinements (last_r : refinement) (m : model) (dsri : rows_reads) (dsro : rows_reads) : (refinement * model) Myseq.t =
+let model_refinements (last_r : refinement) (m : model) (prs : pairs_reads) (dsri : rows_reads) (dsro : rows_reads) : (refinement * model) Myseq.t =
   Myseq.concat (* TODO: rather order by estimated dl *)
-    [ (let* p, ri, mi = row_refinements ~nb_env_paths:0 m.input_model dsri in
-       Myseq.return (Rinput (p,ri), {m with input_model = mi}));
-      (let* p, ro, mo = row_refinements ~nb_env_paths:(dl_row_model_env_stats m.input_model) m.output_model dsro in
-       Myseq.return (Routput (p,ro), {m with output_model = mo})) ]
+    [ (let* p, ri, dli', mi = row_refinements ~nb_env_paths:0 ~dl_M:prs.dl_mi m.input_model dsri in
+       Myseq.return (Rinput (p,ri,dli'), {m with input_model = mi}));
+      (let* p, ro, dlo', mo = row_refinements ~nb_env_paths:(dl_row_model_env_stats m.input_model) ~dl_M:prs.dl_mo m.output_model dsro in
+       Myseq.return (Routput (p,ro,dlo'), {m with output_model = mo})) ]
 
   
 (* learning *)
@@ -1135,16 +1141,16 @@ let learn_model
 	 pp_refinement r; print_newline ();
          pp_model m; print_newline ();
 	 raise exn)
-    ~code:(fun (r,m) (gpsr,gsri,gsro) ->
+    ~code:(fun (r,m) (prs,gsri,gsro) ->
 	   let (lmi,lmo,lm), (ldi,ldo,ld), (_lmdi,_lmdo,lmd) =
-	     norm_dl_model_data gpsr in
+	     norm_dl_model_data prs in
            if verbose then (
              Printf.printf "\t?? %.3f\t" lmd;
              pp_refinement r; print_newline ();
 (*
 	     Printf.printf "\t\tl = %.3f = %.3f + %.3f = (%.3f + %.3f) + (%.3f + %.3f)\n" lmd lm ld lmi lmo ldi ldo;
              print_endline " ===> all reads for first example";
-             List.hd gpsr.reads
+             List.hd prs.reads
              |> List.iter
                   (fun ((_,{data=d_i},dl_i), (_, {data=d_o}, dl_o), dl) ->
                     print_endline " --- some read ---";
@@ -1154,7 +1160,7 @@ let learn_model
              print_newline ()
               
              print_endline " ===> best read for all examples";
-             gpsr.reads
+             prs.reads
              |> List.iter
                   (fun read ->
                     List.hd read
@@ -1169,12 +1175,12 @@ let learn_model
 	   flush stdout;
            lmd)
     ~refinements:
-    (fun (r,m) (gpsr,gsri,gsro) dl ->
+    (fun (r,m) (prs,gsri,gsro) dl ->
       if verbose then print_newline ();
       Printf.printf "%.3f\t" dl; pp_refinement r; print_newline ();
       if verbose then (
         print_endline " ===> first read for first example";
-        List.hd (List.hd gpsr.reads)
+        List.hd (List.hd prs.reads)
         |> (fun ((_,d_i,dl_i), (_, d_o, dl_o), dl) ->
           print_endline " --- some read ---";
           pp_row_data d_i; print_newline ();
@@ -1184,6 +1190,6 @@ let learn_model
         (*pp_grids_read "### OUT grids_read ###" gsro;*)
       (*Printf.printf "    l = %.1f = %.1f + %.1f = (%.1f + %.1f) + (%.1f + %.1f)\n" lmd lm ld lmi lmo ldi ldo;*)
       flush stdout;
-      let refs = model_refinements r m gsri gsro in
+      let refs = model_refinements r m prs gsri gsro in
       refs))
 

@@ -84,7 +84,7 @@ object
     if focus.suggestions = [] then (
       Jsutils.firebug "Computing suggestions...";
       let _, suggestions = (* selecting up to [refine_degree] compressive refinements, keeping other for information *)
-        Model.model_refinements focus.refinement focus.model focus.dsri focus.dsro
+        Model.model_refinements focus.refinement focus.model focus.prs focus.dsri focus.dsro
         |> Myseq.fold_left
              (fun (quota_compressive,suggestions as res) (r,m) ->
                if quota_compressive <= 0
@@ -190,7 +190,7 @@ let html_of_suggestion ~input_dico = function
      "reset current task"
   | RefinedState (s,compressive) ->
      Html.span ~classe:(if compressive then "compressive" else "non-compressive")
-       (Printf.sprintf "(%f)  " s.norm_dl
+       (Printf.sprintf "(%f" s.norm_dl
         ^ Model.string_of_refinement s.refinement)
 
 let html_of_row_from_string_list (ls : string list) =
