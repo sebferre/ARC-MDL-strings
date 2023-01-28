@@ -36,8 +36,7 @@ type value =
   | `Int of int
   | `Date of date
   | `Time of time
-  | `List of value list
-  | `Function of (value -> value result) ]
+  | `List of value list ]
 
 let string_of_value : value -> string result = function
   | `String s -> Result.Ok s
@@ -54,9 +53,6 @@ let time_of_value : value -> time result = function
 let list_of_value (elt_of_value : value -> 'a result) : value -> 'a list result = function
   | `List lv -> list_map_result elt_of_value lv
   | _ -> Result.Error (Invalid_argument "Expr.list_of_value")
-let fun_of_value : value -> (value -> value result) result = function
-  | `Function f -> Result.Ok f
-  | _ -> Result.Error (Invalid_argument "Expr.fun_of_value")
        
 (* functions *)
 
@@ -303,67 +299,63 @@ module MakeIndex (V : Map.OrderedType) =
     let fold = M.fold
   end
 
+module Index = MakeIndex(struct type t = value let compare = Stdlib.compare end)
   
-module StringIndex = MakeIndex(struct type t = string let compare = Stdlib.compare end)
-
-module IntIndex = MakeIndex(struct type t = int let compare = Stdlib.compare end)
-           
-module DateIndex = MakeIndex(struct type t = date let compare = Stdlib.compare end)
-
-module TimeIndex = MakeIndex(struct type t = time let compare = Stdlib.compare end)
-
-(* TODO: lists and functions, need for polymorphism *)
-
-type 'var index =
-  { by_string : 'var StringIndex.t;
-    by_int : 'var IntIndex.t }
-
+type 'var index = 'var Index.t
+                
 let index_lookup (v : value) (index : 'var index) : 'var exprset =
-  match v with
-  | `String s ->
-     (match StringIndex.find_opt s index.by_string with
-      | None -> []
-      | Some exprs -> exprs)
-  | `Int i ->
-     (match IntIndex.find_opt i index.by_int with
-      | None -> []
-      | Some exprs -> exprs)
-  
+  match Index.find_opt v index with
+  | None -> []
+  | Some exprs -> exprs
+                
 let make_index (bindings : ('var * value) list) : 'var index =
-  let index_string, index_int =
+  let index =
     List.fold_left
-      (fun (idx_s,idx_i) (x,v) ->
+      (fun idx (x,v) -> Index.bind v (`Ref x) idx)
+      Index.empty bindings in
+  let index =
+    Index.fold
+      (fun v exprs res ->
         match v with
-        | `String s -> StringIndex.bind s (`Ref x) idx_s, idx_i
-        | `Int i -> idx_s, IntIndex.bind i (`Ref x) idx_i
-        | _ -> raise TODO)
-      (StringIndex.empty, IntIndex.empty) bindings in
-  let index_int =
-    StringIndex.fold
-      (fun s exprs res ->
-        IntIndex.bind (Funct.length s) (`Unary (`Length, exprs)) res)
-      index_string IntIndex.empty in
-  let index_string =
-    StringIndex.fold
-      (fun s exprs res ->
-        match Funct.initial s with
-        | Result.Ok s' -> StringIndex.bind s' (`Unary (`Initial, exprs)) res
-        | Result.Error _ -> res)
-      index_string index_string in
-  let index_string =
-    StringIndex.fold
-      (fun s exprs res ->
-        let res = StringIndex.bind (Funct.uppercase s) (`Unary (`Uppercase, exprs)) res in
-        let res = StringIndex.bind (Funct.lowercase s) (`Unary (`Lowercase, exprs)) res in
-        res)
-      index_string index_string in
-  let index_string =
-    StringIndex.fold
-      (fun s1 exprs1 res ->
-        StringIndex.fold
-          (fun s2 exprs2 res ->
-            res |> StringIndex.bind (s1 ^ s2) (`Binary (`Concat, exprs1, exprs2)))
-          index_string res)
-      index_string index_string in
-  { by_string = index_string;
-    by_int = index_int }
+        | `String s ->
+           let res = Index.bind (`Int (Funct.length s)) (`Unary (`Length, exprs)) res in
+           let res =
+             match Funct.initial s with
+             | Result.Ok s' -> Index.bind (`String s') (`Unary (`Initial, exprs)) res
+             | Result.Error _ -> res in
+           res
+        | `Date d ->
+           let res = Index.bind (`Int (Funct.year d)) (`Unary (`Year, exprs)) res in
+           let res = Index.bind (`Int (Funct.month d)) (`Unary (`Month, exprs)) res in
+           let res = Index.bind (`Int (Funct.day d)) (`Unary (`Day, exprs)) res in
+           res
+        | `Time t ->
+           let res = Index.bind (`Int (Funct.hours t)) (`Unary (`Hours, exprs)) res in
+           let res = Index.bind (`Int (Funct.minutes t)) (`Unary (`Minutes, exprs)) res in
+           let res = Index.bind (`Int (Funct.seconds t)) (`Unary (`Seconds, exprs)) res in
+           res
+        | _ -> res)
+      index index in
+  let index =
+    Index.fold
+      (fun v exprs res ->
+        match v with
+        | `String s ->
+           let res = Index.bind (`String (Funct.uppercase s)) (`Unary (`Uppercase, exprs)) res in
+           let res = Index.bind (`String (Funct.lowercase s)) (`Unary (`Lowercase, exprs)) res in
+           res
+        | _ -> res)
+      index index in
+  let index =
+    Index.fold
+      (fun v1 exprs1 res ->
+        Index.fold
+          (fun v2 exprs2 res ->
+            match v1, v2 with
+            | `String s1, `String s2 ->
+               let res = Index.bind (`String (Funct.concat s1 s2)) (`Binary (`Concat, exprs1, exprs2)) res in
+               res
+            | _ -> res)
+          index res)
+      index index in
+  index
