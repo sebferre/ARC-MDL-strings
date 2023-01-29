@@ -111,7 +111,7 @@ module Funct =
   end
                                                 
 (* expressions *)
-     
+  
 type 'var expr =
   [ `Ref of 'var
   | `Lambda
@@ -125,6 +125,9 @@ let rec xp_expr (xp_var : 'var Xprint.xp) (print : Xprint.t) : 'var expr -> unit
   | `Binary (`Concat, e1,e2) -> xp_expr xp_var print e1; print#string " + "; xp_expr xp_var print e2
   | `Binary (f,e1,e2) -> Funct.xp_binary print f; print#string "("; xp_expr xp_var print e1; print#string ","; xp_expr xp_var print e2; print#string ")"
   
+exception Invalid_eval_unary of Funct.unary * value
+exception Invalid_eval_binary of Funct.binary * value * value
+
 let rec eval (lookup : 'var -> value result) : 'var expr -> value result = function
   | `Ref x -> lookup x
   | `Lambda -> raise TODO
@@ -136,59 +139,49 @@ let rec eval (lookup : 'var -> value result) : 'var expr -> value result = funct
      let| v2 = eval lookup e2 in
      eval_binary f v1 v2
 and eval_unary f v1 =
-  match f with
-  | `Uppercase ->
-     let| s1 = string_of_value v1 in
+  match f, v1 with
+  | `Uppercase, `String s1 ->
      let res = Funct.uppercase s1 in
      Result.Ok (`String res)
-  | `Lowercase ->
-     let| s1 = string_of_value v1 in
+  | `Lowercase, `String s1 ->
      let res = Funct.lowercase s1 in
      Result.Ok (`String res)
-  | `Initial ->
-     let| s1 = string_of_value v1 in
+  | `Initial, `String s1 ->
      let| res = Funct.initial s1 in
      Result.Ok (`String res)
-  | `Length ->
-     let| s1 = string_of_value v1 in
+  | `Length, `String s1 ->
      let res = Funct.length s1 in
      Result.Ok (`Int res)
-  | `Day ->
-     let| d1 = date_of_value v1 in
+  | `Day, `Date d1 ->
      let res = Funct.day d1 in
      Result.Ok (`Int res)
-  | `Month ->
-     let| d1 = date_of_value v1 in
+  | `Month, `Date d1 ->
      let res = Funct.month d1 in
      Result.Ok (`Int res)
-  | `Year ->
-     let| d1 = date_of_value v1 in
+  | `Year, `Date d1 ->
      let res = Funct.year d1 in
      Result.Ok (`Int res)
-  | `Hours ->
-     let| t1 = time_of_value v1 in
+  | `Hours, `Time t1 ->
      let res = Funct.hours t1 in
      Result.Ok (`Int res)
-  | `Minutes ->
-     let| t1 = time_of_value v1 in
+  | `Minutes, `Time t1 ->
      let res = Funct.minutes t1 in
      Result.Ok (`Int res)
-  | `Seconds ->
-     let| t1 = time_of_value v1 in
+  | `Seconds, `Time t1 ->
      let res = Funct.seconds t1 in
      Result.Ok (`Int res)
+  | _ -> Result.Error (Invalid_eval_unary (f,v1))
 and eval_binary f v1 v2 =
-  match f with
-  | `Concat ->
-     let| s1 = string_of_value v1 in
-     let| s2 = string_of_value v2 in
+  match f, v1, v2 with
+  | `Concat, `String s1, `String s2 ->
      let res = Funct.concat s1 s2 in
      Result.Ok (`String res)
-  | `Map_list -> raise TODO
+  | `Map_list, _, _ -> raise TODO
 (*     let| f1 = fun_of_value v1 in
      let| l2 = list_of_value v2 in
      let res = Funct.map_list f1 l2 in
      res *)
+  | _ -> Result.Error (Invalid_eval_binary (f,v1,v2))
 
 let dl_funct = Mdl.Code.uniform 12 (* 12 functions *)
      
