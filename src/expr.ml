@@ -65,16 +65,17 @@ module Funct =
       | `Lowercase
       | `Initial
       | `Length
+      | `Concat
       | `Day
       | `Month
       | `Year 
       | `Hours 
       | `Minutes 
       | `Seconds ]
-    let nb_unary = 10
+    let nb_unary = 11
 
     type binary =
-      [ `Concat
+      [ `Append
       | `Map_list ]
     let nb_binary = 2
 
@@ -85,6 +86,7 @@ module Funct =
       then Result.Error (Invalid_argument "function initial")
       else Result.Ok (String.sub s 0 1)
     let length (s : string) : int = String.length s
+    let concat (l : string list) : string = String.concat "" l
     let year (d : date) : int = d.year
     let month (d : date) : int = d.month
     let day (d : date) : int = d.day
@@ -92,7 +94,7 @@ module Funct =
     let minutes (t : time) : int = t.minutes
     let seconds (t : time) : int = t.seconds
                                   
-    let concat (s1 : string) (s2 : string) : string = s1 ^ s2
+    let append (s1 : string) (s2 : string) : string = s1 ^ s2
     let map_list (f : 'a -> 'b result) (l : 'a list) : 'b list result =
       list_map_result f l
 
@@ -101,6 +103,7 @@ module Funct =
       | `Lowercase -> print#string "lowercase"
       | `Initial -> print#string "initial"
       | `Length -> print#string "length"
+      | `Concat -> print#string "concat"
       | `Day -> print#string "day"
       | `Month -> print#string "month"
       | `Year -> print#string "year"
@@ -109,7 +112,7 @@ module Funct =
       | `Seconds -> print#string "seconds"
 
     let xp_binary (print : Xprint.t) : binary -> unit = function
-      | `Concat -> print#string "concat"
+      | `Append -> print#string "append"
       | `Map_list -> print#string "map_list"
       
   end
@@ -127,7 +130,7 @@ type 'var expr =
 let rec xp_expr (xp_var : 'var Xprint.xp) (print : Xprint.t) : 'var expr -> unit = function
   | `Ref p -> print#string "!"; xp_var print p
   | `Unary (f,e1) -> Funct.xp_unary print f; print#string "("; xp_expr xp_var print e1; print#string ")"
-  | `Binary (`Concat, e1,e2) -> xp_expr xp_var print e1; print#string " + "; xp_expr xp_var print e2
+  | `Binary (`Append, e1,e2) -> xp_expr xp_var print e1; print#string " + "; xp_expr xp_var print e2
   | `Binary (f,e1,e2) -> Funct.xp_binary print f; print#string "("; xp_expr xp_var print e1; print#string ","; xp_expr xp_var print e2; print#string ")"
   | `Arg -> print#string "_"
   | `Fun e1 -> print#string "fun { "; xp_expr xp_var print e1; print#string " }"
@@ -160,6 +163,10 @@ and eval_unary f v1 =
   | `Length, `String s1 ->
      let res = Funct.length s1 in
      Result.Ok (`Int res)
+  | `Concat, `List (`String _ :: _ as l1) ->
+     let| ls = list_map_result (function `String s -> Result.Ok s | _ -> Result.Error (Invalid_argument "concat")) l1 in
+     let res = Funct.concat ls in
+     Result.Ok (`String res)
   | `Day, `Date d1 ->
      let res = Funct.day d1 in
      Result.Ok (`Int res)
@@ -189,8 +196,8 @@ and eval_unary f v1 =
   | _ -> Result.Error (Invalid_eval_unary (f,v1))
 and eval_binary f v1 v2 =
   match f, v1, v2 with
-  | `Concat, `String s1, `String s2 ->
-     let res = Funct.concat s1 s2 in
+  | `Append, `String s1, `String s2 ->
+     let res = Funct.append s1 s2 in
      Result.Ok (`String res)
   | `Map_list, `Fun fun1, `List l2 ->     
      let| lres = Funct.map_list fun1 l2 in
@@ -372,58 +379,50 @@ let index_lookup (v : value) (index : 'var index) : 'var exprset =
   | Some exprs -> exprs
                 
 let make_index (bindings : ('var * value) list) : 'var index =
-  let index =
-    List.fold_left
-      (fun res (x,v) -> Index.bind v (`Ref x) res)
-      Index.empty bindings in
-  let bind_unary f v1 exprs1 index =
-    match eval_unary f v1 with
-    | Result.Ok v -> Index.bind v (`Unary (f, exprs1)) index
-    | Result.Error _ -> index in
-  let bind_binary f v1 exprs1 v2 exprs2 index =
-    match eval_binary f v1 v2 with
-    | Result.Ok v -> Index.bind v (`Binary (f, exprs1, exprs2)) index
-    | Result.Error _ -> index in
-  let index =
+  let add_layer_unary index (get_functions : value -> Funct.unary list) =
     Index.fold
-      (fun v exprs res ->
-        match v with
-        | `String s ->
-           let res = bind_unary `Length v exprs res in
-           let res = bind_unary `Initial v exprs res in
-           res
-        | `Date d ->
-           let res = bind_unary `Year v exprs res in
-           let res = bind_unary `Month v exprs res in
-           let res = bind_unary `Day v exprs res in
-           res
-        | `Time t ->
-           let res = bind_unary `Hours v exprs res in
-           let res = bind_unary `Minutes v exprs res in
-           let res = bind_unary `Seconds v exprs res in
-           res
-        | _ -> res)
+      (fun v1 exprs1 res ->
+        List.fold_left
+          (fun res f ->
+            match eval_unary f v1 with
+            | Result.Ok v -> Index.bind v (`Unary (f, exprs1)) res
+            | Result.Error _ -> res)
+          res (get_functions v1))
       index index in
-  let index =
-    Index.fold
-      (fun v exprs res ->
-        match v with
-        | `String s ->
-           let res = bind_unary `Uppercase v exprs res in
-           let res = bind_unary `Lowercase v exprs res in
-           res
-        | _ -> res)
-      index index in
-  let index =
+  let add_layer_binary index (get_functions : value * value -> Funct.binary list) =
     Index.fold
       (fun v1 exprs1 res ->
         Index.fold
           (fun v2 exprs2 res ->
-            match v1, v2 with
-            | `String s1, `String s2 ->
-               let res = bind_binary `Concat v1 exprs1 v2 exprs2 res in
-               res
-            | _ -> res)
+            List.fold_left
+              (fun res f ->
+                match eval_binary f v1 v2 with
+                | Result.Ok v -> Index.bind v (`Binary (f, exprs1, exprs2)) res
+                | Result.Error _ -> res)
+              res (get_functions (v1,v2)))
           index res)
-      index index in
+      index index
+  in
+  let index =
+    List.fold_left
+      (fun res (x,v) -> Index.bind v (`Ref x) res)
+      Index.empty bindings in
+  let index =
+    add_layer_unary index
+      (function
+       | `String _ -> [`Length; `Initial]
+       | `List (`String _ :: _) -> [`Length; `Initial; `Concat]
+       | `Date _ | `List (`Date _ :: _) -> [`Year; `Month; `Day]
+       | `Time _ | `List (`Time _ :: _) -> [`Hours; `Minutes; `Seconds]
+       | _ -> []) in
+  let index =
+    add_layer_unary index
+      (function
+       | `String _ | `List (`String _ :: _) -> [`Uppercase; `Lowercase]
+       | _ -> []) in
+  let index =
+    add_layer_binary index
+      (function
+       | `String _, `String _ -> [`Append]
+       | _ -> []) in
   index
