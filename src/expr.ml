@@ -1,25 +1,6 @@
 (* Managing expressions for expressing computations in models *)
 
-(* utilities *)
-
-exception TODO
-
-type 'a result = ('a,exn) Result.t
-let ( let| ) res f = Result.bind res f [@@inline]
-
-let rec list_map_result (f : 'a -> ('b,'c) Result.t) (lx : 'a list) : ('b list, 'c) Result.t =
-  match lx with
-  | [] -> Result.Ok []
-  | x::lx1 ->
-     let| y = f x in
-     let| ly1 = list_map_result f lx1 in
-     Result.Ok (y::ly1)
-
-                   
-let ( let* ) seq f = seq |> Myseq.flat_map f [@@inline]
-
-type dl = Mdl.bits
-
+open Utilities
         
 (* types *)
 

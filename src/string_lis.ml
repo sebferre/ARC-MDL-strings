@@ -1,11 +1,8 @@
 
+open Utilities
 open Js_of_ocaml
 
 let _ = Common.prof_on := false (* required because primitive unix_times not supported by js_of_ocaml *)
-
-exception TODO
-
-let ( let| ) res f = Result.bind res f [@@inline]
 
 (* binding operator to force x's effects to take place before running f *)
 (* typical case: x changes the DOM, f () is a long computation *)
@@ -18,21 +15,19 @@ let ( let> ) x f =
   
 (* ---- LIS -------- *)
         
-type 'a triple = 'a Model.triple
-        
 type task_input = (string * Task.task) Focus.input (* name, data *)
                 
 type arc_state =
   { name : string; (* task name *)
     task : Task.task; (* task *)
-    norm_dl_model_data : Model.pairs_reads -> Model.dl triple triple;
+    norm_dl_model_data : Model.pairs_reads -> dl triple triple;
     refinement : Model.refinement; (* previous refinement *)
     model : Model.model; (* current model *)
     prs : Model.pairs_reads; (* pair reads *)
     dsri : Model.rows_reads; (* input reads *)
     dsro : Model.rows_reads; (* output reads *)
-    dls : Mdl.bits Model.triple Model.triple; (* DL components *)
-    norm_dls : Mdl.bits Model.triple Model.triple; (* normalized DL components *)
+    dls : Mdl.bits triple triple; (* DL components *)
+    norm_dls : Mdl.bits triple triple; (* normalized DL components *)
     norm_dl : Mdl.bits; (* global normalized DL *)
     mutable suggestions : arc_suggestion list;
   }
