@@ -23,7 +23,7 @@ type dl = Mdl.bits
         
 (* types *)
 
-(*type typ = [`String | `Int | `Date | `Time | `List of typ | `Function of typ * typ ]*)
+(*type typ = [`String | `Int | `Date | `Time | `List of typ | `Fun of typ * typ ]*)
 
          
 (* values *)
@@ -36,8 +36,10 @@ type value =
   | `Int of int
   | `Date of date
   | `Time of time
-  | `List of value list ]
+  | `List of value list
+  | `Fun of (value -> value result) ]
 
+(* extraction functions, not used much *)
 let string_of_value : value -> string result = function
   | `String s -> Result.Ok s
   | _ -> Result.Error (Invalid_argument "Expr.string_of_value") (* an ill-formed expression was built *)
@@ -69,10 +71,12 @@ module Funct =
       | `Hours 
       | `Minutes 
       | `Seconds ]
+    let nb_unary = 10
 
     type binary =
       [ `Concat
       | `Map_list ]
+    let nb_binary = 2
 
     let uppercase (s : string) : string = String.uppercase_ascii s
     let lowercase (s : string) : string = String.uppercase_ascii s
@@ -114,23 +118,25 @@ module Funct =
   
 type 'var expr =
   [ `Ref of 'var
-  | `Lambda
   | `Unary of Funct.unary * 'var expr
-  | `Binary of Funct.binary * 'var expr * 'var expr ]
+  | `Binary of Funct.binary * 'var expr * 'var expr
+  | `Arg (* implicit unique argument of functions *)
+  | `Fun of 'var expr (* support for unary functions, to be used as arg of higher-order functions *)
+  ]
 
 let rec xp_expr (xp_var : 'var Xprint.xp) (print : Xprint.t) : 'var expr -> unit = function
   | `Ref p -> print#string "!"; xp_var print p
-  | `Lambda -> print#string "_"
   | `Unary (f,e1) -> Funct.xp_unary print f; print#string "("; xp_expr xp_var print e1; print#string ")"
   | `Binary (`Concat, e1,e2) -> xp_expr xp_var print e1; print#string " + "; xp_expr xp_var print e2
   | `Binary (f,e1,e2) -> Funct.xp_binary print f; print#string "("; xp_expr xp_var print e1; print#string ","; xp_expr xp_var print e2; print#string ")"
+  | `Arg -> print#string "_"
+  | `Fun e1 -> print#string "fun { "; xp_expr xp_var print e1; print#string " }"
   
 exception Invalid_eval_unary of Funct.unary * value
 exception Invalid_eval_binary of Funct.binary * value * value
 
 let rec eval (lookup : 'var -> value result) : 'var expr -> value result = function
   | `Ref x -> lookup x
-  | `Lambda -> raise TODO
   | `Unary (f,e1) ->
      let| v1 = eval lookup e1 in
      eval_unary f v1
@@ -138,6 +144,8 @@ let rec eval (lookup : 'var -> value result) : 'var expr -> value result = funct
      let| v1 = eval lookup e1 in
      let| v2 = eval lookup e2 in
      eval_binary f v1 v2
+  | `Arg -> Result.Ok (`Fun (fun arg -> Result.Ok arg))
+  | `Fun e1 -> eval lookup e1
 and eval_unary f v1 =
   match f, v1 with
   | `Uppercase, `String s1 ->
@@ -170,46 +178,99 @@ and eval_unary f v1 =
   | `Seconds, `Time t1 ->
      let res = Funct.seconds t1 in
      Result.Ok (`Int res)
+  | _, `List l1 ->
+     let| lres = list_map_result (eval_unary f) l1 in
+     Result.Ok (`List lres)
+  | _, `Fun fun1 ->
+     Result.Ok
+       (`Fun (fun arg ->
+            let| v1' = fun1 arg in
+            eval_unary f v1'))
   | _ -> Result.Error (Invalid_eval_unary (f,v1))
 and eval_binary f v1 v2 =
   match f, v1, v2 with
   | `Concat, `String s1, `String s2 ->
      let res = Funct.concat s1 s2 in
      Result.Ok (`String res)
-  | `Map_list, _, _ -> raise TODO
-(*     let| f1 = fun_of_value v1 in
-     let| l2 = list_of_value v2 in
-     let res = Funct.map_list f1 l2 in
-     res *)
+  | `Map_list, `Fun fun1, `List l2 ->     
+     let| lres = Funct.map_list fun1 l2 in
+     Result.Ok (`List lres)
+  | _, `List l1, `List l2 ->
+     if List.length l1 = List.length l2
+     then
+       let| lres =
+         list_map_result
+           (fun (x1,x2) -> eval_binary f x1 x2)
+           (List.combine l1 l2) in
+       Result.Ok (`List lres)
+     else Result.Error (Invalid_eval_binary (f,v1,v2))
+  | _, `List l1, _ ->
+     let| lres = list_map_result (fun x1 -> eval_binary f x1 v2) l1 in
+     Result.Ok (`List lres)
+  | _, _, `List l2 ->
+     let| lres = list_map_result (fun x2 -> eval_binary f v1 x2) l2 in
+     Result.Ok (`List lres)
+  | _, `Fun fun1, _ ->
+     Result.Ok
+       (`Fun (fun arg ->
+            let| v1' = fun1 arg in
+            eval_binary f v1' v2))
+  | _, _, `Fun fun2 ->
+     Result.Ok
+       (`Fun (fun arg ->
+            let| v2' = fun2 arg in
+            eval_binary f v1 v2'))
   | _ -> Result.Error (Invalid_eval_binary (f,v1,v2))
 
-let dl_funct = Mdl.Code.uniform 12 (* 12 functions *)
+let dl_funct = Mdl.Code.uniform (Funct.nb_unary + Funct.nb_binary + 1 (* Fun *))
      
 let rec dl_expr (dl_var : 'var -> dl) (e : 'var expr) : dl =
-  let nb_funct = dl_expr_stats e in
+  let nb_funct, nb_arg = dl_expr_stats e in
+  assert (nb_arg = 0);
   Mdl.Code.universal_int_star nb_funct
-  +. dl_expr_aux dl_var nb_funct e
-and dl_expr_aux dl_var nb_funct = function
+  +. dl_expr_aux dl_var nb_funct 0 e
+and dl_expr_aux dl_var nb_funct nb_arg = function
   | `Ref p ->
-     assert (nb_funct = 0); (* must be a ref *)
+     assert (nb_funct = 0);
+     assert (nb_arg = 0);
      dl_var p
-  | `Lambda -> raise TODO
   | `Unary (f,e1) ->
+     assert (nb_funct > 0);
      dl_funct
-     +. dl_expr_aux dl_var (nb_funct - 1) e1
+     +. dl_expr_aux dl_var (nb_funct - 1) nb_arg e1
   | `Binary (f,e1,e2) ->
-     let nb1 = dl_expr_stats e1 in
-     let nb2 = dl_expr_stats e2 in
-     assert (nb1 + nb2 + 1 = nb_funct);
+     assert (nb_funct > 0);
+     let nbf1, nba1 = dl_expr_stats e1 in
+     let nbf2, nba2 = dl_expr_stats e2 in
+     assert (nbf1 + nbf2 + 1 = nb_funct);
+     assert (nba1 + nba2 = nb_arg);
      dl_funct
-     +. Mdl.Code.uniform (nb1 + 1) (* choosing split of functions between e1 and e2 *)
-     +. dl_expr_aux dl_var nb1 e1
-     +. dl_expr_aux dl_var nb2 e2
-and dl_expr_stats : 'var expr -> int = function (* counting function applications *)
-  | `Ref _ -> 0
-  | `Lambda -> 0
-  | `Unary (f,e1) -> 1 + dl_expr_stats e1
-  | `Binary (f,e1,e2) -> 1 + dl_expr_stats e1 + dl_expr_stats e2
+     +. Mdl.Code.uniform nb_funct (* choosing split of functions between e1 and e2 *)
+     +. Mdl.Code.uniform (nb_arg + 1) (* choosing split of args between e1 and e2 *)
+     +. dl_expr_aux dl_var nbf1 nba1 e1
+     +. dl_expr_aux dl_var nbf2 nba2 e2
+  | `Arg ->
+     assert (nb_funct = 0);
+     assert (nb_arg = 1);
+     0.
+  | `Fun e1 ->
+     assert (nb_funct > 0);
+     assert (nb_arg = 0);
+     dl_funct
+     +. dl_expr_aux dl_var (nb_funct - 1) 1 e1
+and dl_expr_stats : 'var expr -> int * int = function (* counting function applications and abstractions, and nb of args *)
+  | `Ref _ -> 0, 0
+  | `Unary (f,e1) ->
+     let nbf1, nba1 = dl_expr_stats e1 in
+     1 + nbf1, nba1
+  | `Binary (f,e1,e2) ->
+     let nbf1, nba1 = dl_expr_stats e1 in
+     let nbf2, nba2 = dl_expr_stats e2 in
+     1 + nbf1 + nbf2, nba1 + nba2
+  | `Arg -> 0, 1
+  | `Fun e1 ->
+     let nbf1, nba1 = dl_expr_stats e1 in
+     1 + nbf1, 0 (* assuming all args in e1 bound by Fun *)
 
                      
 (* expression sets : idea taken from FlashMeta *)
@@ -217,16 +278,16 @@ and dl_expr_stats : 'var expr -> int = function (* counting function application
 type 'var exprset = 'var expritem list
 and 'var expritem =
   [ `Ref of 'var
-  | `Lambda
   | `Unary of Funct.unary * 'var exprset
-  | `Binary of Funct.binary * 'var exprset * 'var exprset ]
+  | `Binary of Funct.binary * 'var exprset * 'var exprset
+  | `Arg
+  | `Fun of 'var exprset ]
 
 let rec exprset_to_seq (es : 'var exprset) : 'var expr Myseq.t =
   let* item = Myseq.from_list es in
   expritem_to_seq item
 and expritem_to_seq : 'var expritem -> 'var expr Myseq.t = function
   | `Ref x -> Myseq.return (`Ref x)
-  | `Lambda -> Myseq.return (`Lambda)
   | `Unary (f,es1) ->
      let* e1 = exprset_to_seq es1 in
      Myseq.return (`Unary (f,e1))
@@ -234,6 +295,10 @@ and expritem_to_seq : 'var expritem -> 'var expr Myseq.t = function
      let* e1 = exprset_to_seq es1 in
      let* e2 = exprset_to_seq es2 in
      Myseq.return (`Binary (f,e1,e2))
+  | `Arg -> Myseq.return (`Arg)
+  | `Fun es1 ->
+     let* e1 = exprset_to_seq es1 in
+     Myseq.return (`Fun e1)
   
 let rec exprset_inter (es1 : 'var exprset) (es2 : 'var exprset) : 'var exprset =
   List.fold_left
@@ -256,6 +321,11 @@ and expritem_inter (item1 : 'var expritem) (item2 : 'var expritem) : 'var exprit
      (match exprset_inter e11 e21, exprset_inter e12 e22  with
       | [], _ | _, [] -> None
       | e1, e2 -> Some (`Binary (f1,e1,e2)))
+  | `Arg, `Arg -> Some (`Arg)
+  | `Fun e1, `Fun e2 ->
+     (match exprset_inter e1 e2 with
+      | [] -> None
+      | e -> Some (`Fun e))
   | _ -> None
 
 let rec exprset_inter_list (esl1 : 'var exprset list) (esl2 : 'var exprset list) : 'var exprset list =
@@ -304,28 +374,33 @@ let index_lookup (v : value) (index : 'var index) : 'var exprset =
 let make_index (bindings : ('var * value) list) : 'var index =
   let index =
     List.fold_left
-      (fun idx (x,v) -> Index.bind v (`Ref x) idx)
+      (fun res (x,v) -> Index.bind v (`Ref x) res)
       Index.empty bindings in
+  let bind_unary f v1 exprs1 index =
+    match eval_unary f v1 with
+    | Result.Ok v -> Index.bind v (`Unary (f, exprs1)) index
+    | Result.Error _ -> index in
+  let bind_binary f v1 exprs1 v2 exprs2 index =
+    match eval_binary f v1 v2 with
+    | Result.Ok v -> Index.bind v (`Binary (f, exprs1, exprs2)) index
+    | Result.Error _ -> index in
   let index =
     Index.fold
       (fun v exprs res ->
         match v with
         | `String s ->
-           let res = Index.bind (`Int (Funct.length s)) (`Unary (`Length, exprs)) res in
-           let res =
-             match Funct.initial s with
-             | Result.Ok s' -> Index.bind (`String s') (`Unary (`Initial, exprs)) res
-             | Result.Error _ -> res in
+           let res = bind_unary `Length v exprs res in
+           let res = bind_unary `Initial v exprs res in
            res
         | `Date d ->
-           let res = Index.bind (`Int (Funct.year d)) (`Unary (`Year, exprs)) res in
-           let res = Index.bind (`Int (Funct.month d)) (`Unary (`Month, exprs)) res in
-           let res = Index.bind (`Int (Funct.day d)) (`Unary (`Day, exprs)) res in
+           let res = bind_unary `Year v exprs res in
+           let res = bind_unary `Month v exprs res in
+           let res = bind_unary `Day v exprs res in
            res
         | `Time t ->
-           let res = Index.bind (`Int (Funct.hours t)) (`Unary (`Hours, exprs)) res in
-           let res = Index.bind (`Int (Funct.minutes t)) (`Unary (`Minutes, exprs)) res in
-           let res = Index.bind (`Int (Funct.seconds t)) (`Unary (`Seconds, exprs)) res in
+           let res = bind_unary `Hours v exprs res in
+           let res = bind_unary `Minutes v exprs res in
+           let res = bind_unary `Seconds v exprs res in
            res
         | _ -> res)
       index index in
@@ -334,8 +409,8 @@ let make_index (bindings : ('var * value) list) : 'var index =
       (fun v exprs res ->
         match v with
         | `String s ->
-           let res = Index.bind (`String (Funct.uppercase s)) (`Unary (`Uppercase, exprs)) res in
-           let res = Index.bind (`String (Funct.lowercase s)) (`Unary (`Lowercase, exprs)) res in
+           let res = bind_unary `Uppercase v exprs res in
+           let res = bind_unary `Lowercase v exprs res in
            res
         | _ -> res)
       index index in
@@ -346,7 +421,7 @@ let make_index (bindings : ('var * value) list) : 'var index =
           (fun v2 exprs2 res ->
             match v1, v2 with
             | `String s1, `String s2 ->
-               let res = Index.bind (`String (Funct.concat s1 s2)) (`Binary (`Concat, exprs1, exprs2)) res in
+               let res = bind_binary `Concat v1 exprs1 v2 exprs2 res in
                res
             | _ -> res)
           index res)
