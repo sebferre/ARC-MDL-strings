@@ -607,7 +607,7 @@ and cell_encoder (m : cell_model) : cell_data encoder =
 and cell_encoder_aux : cell_model -> cell_data encoder = function
   | Nil ->
      (function
-      | DNil -> 0.
+      | DNil | DAny "" -> 0.
       | _ -> assert false)
   | Any ->
      (function
@@ -836,7 +836,8 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                            if len > best_len
                            then (len, slice)
                            else best)
-                         (0, ("", DToken "", "")) (token_parse tm s) in
+                         (0, ("", DToken "", ""))
+                         (token_parse tm s) in
                      if best_len > 0
                      then (`Token tm, DFactor (DAny sl, data', DAny sr)) :: rs
                      else rs)
@@ -858,7 +859,17 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
        let m' =
          match r_info with
          | `IsNil -> Nil
-         | `Token tm -> Factor (Any, tm, Any)
+         | `Token tm ->
+            let l, r = (* for both left and right: Nil if all empty strings, Any otherwise *)
+              List.fold_left
+                (fun (l,r) (read,data') ->
+                  match data' with
+                  | DFactor (DAny sl, _, DAny sr) ->
+                     (if sl <> "" then Any else l),
+                     (if sr <> "" then Any else r)
+                  | _ -> assert false)
+                (Nil, Nil) best_reads in
+            Factor (l, tm, r)
          | `CommonStr s -> Factor (Nil, Const s, Nil) in
        let r = RCell m' in
        let encoder_m' = cell_encoder m' in
