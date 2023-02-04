@@ -61,7 +61,7 @@ module Funct =
     let nb_binary = 2
 
     let uppercase (s : string) : string = String.uppercase_ascii s
-    let lowercase (s : string) : string = String.uppercase_ascii s
+    let lowercase (s : string) : string = String.lowercase_ascii s
     let initial (s : string) : string result =
       if s = ""
       then Result.Error (Invalid_argument "function initial")
