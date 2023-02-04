@@ -46,9 +46,25 @@ and token_model =
   | Regex of regex_model
   | Expr of expr
 and regex_model =
-  | Alphas (* [-A-Za-z0-9_]+ *)
-  | Nums (* [0-9]+\([.][0-9]*\)? *)
-  | Letters (* [A-Za-z-]+ *)
+  | Content (* word, operators *)
+  | Word (* letters, digits, _ *)
+  | Letters (* [A-Za-z]+ *)
+  | Decimal (* digits (. digits)? *)
+  | Digits (* [0-9]+ *)
+  | Separators (* spaces, puncts, quotes, brackets *)
+  | Spaces (* [ \n\t\r\f]+ *)
+
+let nb_regex = 7
+  
+let special_consts =
+  [ (* operators *)
+    "#"; "$"; "%"; "&"; "*"; "+"; "-"; "/"; "<"; "="; ">"; "@"; "\\"; "^"; "|"; "~";
+    (* punctuation *)
+    "!"; ","; "."; ":"; ";"; "?";
+    (* quotes *)
+    "\""; "'"; "`";
+    (* brackets *)
+    "("; ")"; "["; "]"; "{"; "}" ]
 
 let row_model0 (row_size : int) : row_model = List.init row_size (fun _ -> Any)
 
@@ -141,9 +157,13 @@ and xp_token_model print ?(ctx : token_ctx option) = function
      Expr.xp_expr xp_row_path print e;
      print#string "</span>"
 and xp_regex_model print = function
-  | Alphas -> print#string "Alphas"
-  | Nums -> print#string "Digits"
+  | Content -> print#string "Content"
+  | Word -> print#string "Word"
   | Letters -> print#string "Letters"
+  | Decimal -> print#string "Decimal"
+  | Digits -> print#string "Digits"
+  | Separators -> print#string "Separators"
+  | Spaces -> print#string "Spaces"
 let pp_row_model m = Xprint.to_stdout (xp_row_model ~ctx:ctx0) m
 let string_of_row_model m = Xprint.to_string (xp_row_model ~ctx:ctx0) m
                     
@@ -267,9 +287,13 @@ and token_generate : token_model -> token_data = function
   | Regex re -> DToken (regex_generate re)
   | Expr _ -> assert false
 and regex_generate : regex_model -> string = function
-  | Alphas -> "X1_Y2"
-  | Nums -> "123"
+  | Content -> "A-b_1&2"
+  | Word -> "Ab_1"
   | Letters -> "Abc"
+  | Decimal -> "12.3"
+  | Digits -> "123"
+  | Separators -> ", "
+  | Spaces -> " "
 
 
 (* parse *)
@@ -277,15 +301,58 @@ and regex_generate : regex_model -> string = function
 exception Parse_failure
 
 type ('a,'b) parseur = 'a -> 'b Myseq.t
-             
-let re_alphas = Str.regexp "[A-Za-z_0-9]+"
-let re_nums = Str.regexp "[0-9]+"
-let re_letters = Str.regexp "[A-Za-z]+"
 
-let re_of_regexp = function
-  | Alphas -> re_alphas
-  | Nums -> re_nums
+let chars_letters =
+  ['A'; 'B'; 'C'; 'D'; 'E'; 'F'; 'G'; 'H'; 'I'; 'J'; 'K'; 'L'; 'M'; 'N'; 'O'; 'P'; 'Q'; 'R'; 'S'; 'T'; 'U'; 'V'; 'W'; 'X'; 'Y'; 'Z';
+   'a'; 'b'; 'c'; 'd'; 'e'; 'f'; 'g'; 'h'; 'i'; 'j'; 'k'; 'l'; 'm'; 'n'; 'o'; 'p'; 'q'; 'r'; 's'; 't'; 'u'; 'v'; 'w'; 'x'; 'y'; 'z']
+let chars_digits =
+  ['0'; '1'; '2'; '3'; '4'; '5'; '6'; '7'; '8'; '9']
+let chars_decimal =
+  '.' :: chars_digits
+let chars_word =
+  '_' :: chars_digits @ chars_letters
+let chars_operators =
+  ['#'; '$'; '%'; '&'; '*'; '+'; '-'; '/'; '<'; '='; '>'; '@'; '\\'; '^'; '|'; '~']
+let chars_content =
+  chars_word @ chars_operators
+let chars_spaces =
+  [' '; '\n'; '\t'; '\r']
+let chars_puncts =
+  ['!'; ','; '.'; ':'; ';'; '?']
+let chars_quotes =
+  ['"'; '\''; '`']
+let chars_brackets =
+  ['('; ')'; '['; ']'; '{'; '}']
+let chars_separators =
+  chars_spaces @ chars_puncts @ chars_quotes @ chars_brackets
+let chars =
+  chars_content @ chars_separators
+
+let chars_of_regex = function
+  | Content -> chars_content
+  | Word -> chars_word
+  | Letters -> chars_letters
+  | Decimal -> chars_decimal
+  | Digits -> chars_digits
+  | Separators -> chars_separators
+  | Spaces -> chars_spaces
+  
+let re_content = Str.regexp "[A-Za-z_0-9#$%&*+/<=>@\\^|~-]+"
+let re_word = Str.regexp "[A-Za-z_0-9]+"
+let re_letters = Str.regexp "[A-Za-z]+"
+let re_decimal = Str.regexp "[0-9]+\\([.][0-9]+\\)?"
+let re_digits = Str.regexp "[0-9]+"
+let re_separators = Str.regexp "[] \n\t\r!,.:;?\"'`()[{}]+"
+let re_spaces = Str.regexp "[ \n\t\r]+"
+
+let re_of_regex = function
+  | Content -> re_content
+  | Word -> re_word
   | Letters -> re_letters
+  | Decimal -> re_decimal
+  | Digits -> re_digits
+  | Separators -> re_separators
+  | Spaces -> re_spaces
 
 let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize *)
   Str.string_match re s 0
@@ -315,11 +382,7 @@ let token_parse (m : token_model) : (string, string * token_data * string) parse
   let re =
     match m with
     | Const s -> Str.regexp_string s
-    | Regex rm ->
-       ( match rm with
-       | Alphas -> re_alphas
-       | Nums -> re_nums
-       | Letters -> re_letters )
+    | Regex rm -> re_of_regex rm
     | Expr _ -> assert false in
   let n = String.length s in
   let* i, j = regexp_match_slices re s n 0 in
@@ -435,39 +498,26 @@ let ascii_init_occs =
     'Z', 0.13;
     'z', 0.13;
   ]
-       
-let ascii_chars =
-  let l = ref [] in
-  for i = 0 to 127 do
-    l := Char.chr i :: !l
-  done;
-  !l
-let make_ascii_prequential = new Mdl.Code.prequential ascii_chars (* no assumption on char freq, not to spoil the value of specific regexs *)
 
-let letter_chars =
-  let l = ref [] in
-  for i = Char.code 'a' to Char.code 'z' do l := Char.chr i :: !l done;
-  for i = Char.code 'A' to Char.code 'Z' do l := Char.chr i :: !l done;
-  !l
-let make_letter_prequential = new Mdl.Code.prequential ~init_occs:ascii_init_occs letter_chars
-
-let num_chars =
-  let l = ref [] in
-  for i = Char.code '0' to Char.code '9' do l := Char.chr i :: !l done;
-  !l
-let make_num_prequential = new Mdl.Code.prequential num_chars
-
-let alpha_chars = '_' :: num_chars @ letter_chars
-let make_alpha_prequential = new Mdl.Code.prequential ~init_occs:ascii_init_occs alpha_chars
+let init_occs_of_regex = function
+  | Content | Word | Letters -> Some ascii_init_occs
+  | _ -> None
      
-let dl_char_plus (make_pc : unit -> char Mdl.Code.prequential) (s : string) : dl =
+let dl_char_plus ?init_occs chars (s : string) : dl =
   (* using prequential code *)
-  let pc = make_pc () in
+  let pc = new Mdl.Code.prequential ?init_occs chars () in
   String.iter
     (fun c -> ignore (pc#code c))
     s;
   pc#cumulated_dl
 
+let dl_string_ascii (s : string) : dl = dl_char_plus chars s
+
+let dl_string_regex (re : regex_model) (s : string) : dl =
+  let chars = chars_of_regex re in
+  let init_occs = init_occs_of_regex re in
+  dl_char_plus ?init_occs chars s
+  
 (* let rec dl_doc_path : doc_path -> dl = function (* TODO: take env into account *)
   | ThisDoc -> Mdl.Code.usage 0.5
   | Left p1 -> Mdl.Code.usage 0.1 +. dl_doc_path p1
@@ -531,17 +581,13 @@ and dl_token_model ~nb_env_paths : token_model -> dl = function
   | Const s ->
      Mdl.Code.usage 0.3
      +. Mdl.Code.universal_int_plus (String.length s)
-     +. dl_char_plus make_ascii_prequential s
-  | Regex re ->
+     +. dl_string_ascii s
+  | Regex rm ->
      Mdl.Code.usage 0.2
-     +. dl_regex_model re
+     +. Mdl.Code.uniform nb_regex
   | Expr e ->
      Mdl.Code.usage 0.5
      +. Expr.dl_expr (fun p -> Mdl.Code.uniform nb_env_paths) e  
-and dl_regex_model : regex_model -> dl = function
-  | Alphas -> Mdl.Code.usage 0.4
-  | Nums -> Mdl.Code.usage 0.3
-  | Letters -> Mdl.Code.usage 0.3
 
 type 'a encoder = 'a -> dl
 
@@ -565,7 +611,7 @@ and cell_encoder_aux : cell_model -> cell_data encoder = function
       | _ -> assert false)
   | Any ->
      (function
-      | DAny s -> dl_char_plus make_ascii_prequential s
+      | DAny s -> dl_string_ascii s
       | _ -> assert false)
   | Factor (l,t,r) ->
      let enc_split = (* TODO: better take into account actual l, t, r *)
@@ -613,14 +659,10 @@ and token_encoder_range : token_model -> Range.t = function
   | Expr _ -> Range.make_open 1
 and token_encoder : token_model -> token_data encoder = function
   | Const _ -> (function DToken _ -> 0.)
-  | Regex re ->
-     let enc_re = regex_encoder re in
-     (function DToken s -> enc_re s)
+  | Regex rm ->
+     let enc_rm = dl_string_regex rm in
+     (function DToken s -> enc_rm s)
   | Expr _ -> (fun _ -> 0.) (* nothing to code, evaluated *)
-and regex_encoder : regex_model -> string encoder = function
-  | Alphas -> dl_char_plus make_alpha_prequential
-  | Nums -> dl_char_plus make_num_prequential
-  | Letters -> dl_char_plus make_letter_prequential
 
 
 (* reading *)
@@ -776,16 +818,17 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
     | Any ->
        let encoder_m = cell_encoder m in
        let dl_m = dl_cell_model ~nb_env_paths m in
-       let r_best_reads : ([`IsNil | `RE of regex_model | `CommonStr of string], _) Mymap.t =
+       let r_best_reads : ([`IsNil | `Token of token_model | `CommonStr of string], _) Mymap.t =
          inter_union_reads
            (fun (_,data,_) ->
              let s = cell_of_cell_data data in
-             let rs = if s = "" then [(`IsNil, DNil)] else [] in
-             let rs =
+             let rs = (* the nil string *)
+               if s = "" then [(`IsNil, DNil)] else [] in
+             let rs = (* token models *)
                if s <> ""
                then
                  List.fold_left
-                   (fun rs re ->
+                   (fun rs tm ->
                      let best_len, (sl, data', sr as best_slice) =
                        Myseq.fold_left
                          (fun (best_len, best_slide as best) (_, data', _ as slice) ->
@@ -793,13 +836,19 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                            if len > best_len
                            then (len, slice)
                            else best)
-                         (0, ("", DToken "", "")) (token_parse (Regex re) s) in
+                         (0, ("", DToken "", "")) (token_parse tm s) in
                      if best_len > 0
-                     then (`RE re, DFactor (DAny sl, data', DAny sr)) :: rs
+                     then (`Token tm, DFactor (DAny sl, data', DAny sr)) :: rs
                      else rs)
-                   rs [Alphas; Nums; Letters]
+                   rs
+                   (List.map
+                      (fun re -> Regex re)
+                      [Content; Word; Letters; Decimal; Digits; Separators; Spaces]
+                    @ List.map
+                        (fun spe -> Const spe)
+                        special_consts)                      
                else rs in
-             let rs =
+             let rs = (* constant strings *)
                if s <> ""
                then (`CommonStr s, DFactor (DNil, DToken s, DNil)) :: rs
                else rs in
@@ -809,7 +858,7 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
        let m' =
          match r_info with
          | `IsNil -> Nil
-         | `RE re -> Factor (Any, Regex re, Any)
+         | `Token tm -> Factor (Any, tm, Any)
          | `CommonStr s -> Factor (Nil, Const s, Nil) in
        let r = RCell m' in
        let encoder_m' = cell_encoder m' in
@@ -851,7 +900,10 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
        let dl_m = dl_token_model ~nb_env_paths m in
        let re'_candidates =
          match re with
-         | Alphas -> [Nums; Letters]
+         | Content -> [Word; Decimal]
+         | Word -> [Letters; Digits]
+         | Decimal -> [Digits]
+         | Separators -> [Spaces]
          | _ -> [] in
        let r_best_reads : ([`CommonStr of string | `RE of regex_model | `Expr of expr], _) Mymap.t =
          inter_union_reads
@@ -862,7 +914,7 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
              let rs =
                List.fold_left
                  (fun rs re' ->
-                   if regexp_match_full (re_of_regexp re') s
+                   if regexp_match_full (re_of_regex re') s
                    then (`RE re', DToken s) :: rs
                    else rs)
                  rs re'_candidates in
