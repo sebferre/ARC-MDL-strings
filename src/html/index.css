@@ -17,6 +17,15 @@ pre.inline {
 }
 
 .model-factor {
+    display: inline-block;
+}
+
+.model-opt {
+    display: inline-block;
+    border: 2px dashed;
+    border-radius: 2px;
+    padding: 2px 2px;
+    margin: 2px 2px;
 }
 
 .model-path {

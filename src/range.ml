@@ -60,5 +60,8 @@ let inter_list = function
   | [] -> failwith "inter_list: empty list"
   | r::lr -> List.fold_left inter r lr
                
-                          
+let opt : t -> t = function
+  | Closed (_,b) -> Closed (0,b)
+  | Open _ -> Open 0
+
               

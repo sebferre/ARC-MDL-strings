@@ -17,6 +17,7 @@ type value =
   | `Int of int
   | `Date of date
   | `Time of time
+  | `None
   | `List of value list
   | `Fun of (value -> value result) ]
 
@@ -166,6 +167,8 @@ and eval_unary f v1 =
   | `Seconds, `Time t1 ->
      let res = Funct.seconds t1 in
      Result.Ok (`Int res)
+  | _, `None ->
+     Result.Ok `None
   | _, `List l1 ->
      let| lres = list_map_result (eval_unary f) l1 in
      Result.Ok (`List lres)
@@ -183,6 +186,10 @@ and eval_binary f v1 v2 =
   | `Map_list, `Fun fun1, `List l2 ->     
      let| lres = Funct.map_list fun1 l2 in
      Result.Ok (`List lres)
+  | _, `None, _ ->
+     Result.Ok `None
+  | _, _, `None ->
+     Result.Ok `None
   | _, `List l1, `List l2 ->
      if List.length l1 = List.length l2
      then

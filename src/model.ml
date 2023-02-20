@@ -41,6 +41,7 @@ and cell_model =
   | Nil
   | Any
   | Factor of cell_model * token_model * cell_model
+  | Opt of cell_model
 and token_model =
   | Const of string
   | Regex of regex_model
@@ -73,6 +74,7 @@ and cell_data =
   | DNil
   | DAny of string
   | DFactor of cell_data * token_data * cell_data
+  | DOpt of cell_data option (* None -> "" *)
 and token_data =
   | DToken of string
             
@@ -134,11 +136,15 @@ and xp_cell_model (print : Xprint.t) ?(ctx : cell_ctx option) = function
      let ctx_l = ctx |> Option.map (fun ctx -> (fun p -> ctx (Left p))) in
      let ctx_t = ctx |> Option.map (fun ctx -> (fun p -> ctx (Middle p))) in
      let ctx_r = ctx |> Option.map (fun ctx -> (fun p -> ctx (Right p))) in
-     print#string "<span class=\"model-factor\">";
+     print#string "<div class=\"model-factor\">";
      xp_cell_model print ?ctx:ctx_l l;
      xp_token_model print ?ctx:ctx_t t;
      xp_cell_model print ?ctx:ctx_r r;
-     print#string "</span>"
+     print#string "</div>"
+  | Opt c ->
+     print#string "<div class=\"model-opt\">";
+     xp_cell_model print ?ctx c;
+     print#string "</div>?&nbsp;"
 and xp_token_model print ?(ctx : token_ctx option) = function
   | Const s ->
      print#string "<span class=\"model-const\">";
@@ -183,6 +189,9 @@ and xp_cell_data (print : Xprint.t) = function
      xp_cell_data print l;
      xp_token_data print t;
      xp_cell_data print r
+  | DOpt (None) -> ()
+  | DOpt (Some c) ->
+     xp_cell_data print c
 and xp_token_data print = function
   | DToken s ->
      print#string "<span class=\"data-token\">";
@@ -202,6 +211,10 @@ and cell_of_cell_data : cell_data -> string = function
   | DFactor (l,t,r) -> cell_of_cell_data l
                        ^ token_of_token_data t
                        ^ cell_of_cell_data r
+  | DOpt c_opt ->
+     (match c_opt with
+      | None -> ""
+      | Some c -> cell_of_cell_data c)
 and token_of_token_data : token_data -> string = function
   | DToken s -> s
 
@@ -209,6 +222,8 @@ let rec cell_data_length : cell_data -> int = function
   | DNil -> 0
   | DAny s -> String.length s
   | DFactor (l,t,r) -> cell_data_length l + token_data_length t + cell_data_length r
+  | DOpt None -> 0
+  | DOpt (Some c) -> cell_data_length c
 and token_data_length = function
   | DToken s -> String.length s
               
@@ -223,6 +238,8 @@ and cell_find (p : cell_path) (d : cell_data) : Expr.value result =
   | Left p1, DFactor (l,_,_) -> cell_find p1 l
   | Middle p1, DFactor (_,t,_) -> token_find p1 t
   | Right p1, DFactor (_,_,r) -> cell_find p1 r
+  | _, DOpt None -> Result.Ok `None
+  | _, DOpt (Some c) -> cell_find p c
   | _ -> assert false
 and token_find p d =
   match p, d with
@@ -245,6 +262,10 @@ let row_bindings (ld : row_data) : (row_path * Expr.value) list =
        let acc = aux_cell (fun p -> ctx (Left p)) l acc in
        let acc = aux_token (fun p -> ctx (Middle p)) t acc in
        acc
+    | DOpt None -> acc (* TODO: should we add a binding to value `None ? *)
+    | DOpt (Some c) ->
+       let acc = aux_cell ctx c acc in
+       (* (ctx ThisDoc, `String (cell_of_cell_data d)) :: *) acc
   and aux_token ctx t acc =
     match t with
     | DToken s -> (ctx ThisToken, `String s) :: acc
@@ -264,6 +285,9 @@ and cell_apply (m : cell_model) (env : env) : cell_model result =
      let| t' = token_apply t env in
      let| r' = cell_apply r env in
      Result.Ok (Factor (l',t',r'))
+  | Opt c ->
+     let| c' = cell_apply c env in
+     Result.Ok (Opt c')
 and token_apply t env : token_model result =
   match t with
   | Const s -> Result.Ok (Const s)
@@ -282,6 +306,7 @@ and cell_generate : cell_model -> cell_data = function
   | Nil -> DNil
   | Any -> DAny "..."
   | Factor (l,t,r) -> DFactor (cell_generate l, token_generate t, cell_generate r)
+  | Opt c -> DOpt (Some (cell_generate c))
 and token_generate : token_model -> token_data = function
   | Const s -> DToken s
   | Regex re -> DToken (regex_generate re)
@@ -415,6 +440,12 @@ let rec cell_parse (m : cell_model) : (string, cell_data) parseur =
        let* dl = cell_parse l sl in
        let* dr = cell_parse r sr in
        Myseq.return (DFactor (dl, dt, dr))
+  | Opt c ->
+     if s = ""
+     then Myseq.return (DOpt None)
+     else
+       let* dc = cell_parse c s in
+       Myseq.return (DOpt (Some dc))
 
 let row_parse (lm : row_model) : (string list, row_data) parseur =
   fun ls ->
@@ -543,40 +574,60 @@ and dl_cell_model_env_stats : cell_model -> int = function
      dl_cell_model_env_stats l
      + 1
      + dl_cell_model_env_stats r
+  | Opt c ->
+     dl_cell_model_env_stats c
 and dl_cell_model ~nb_env_paths (m : cell_model) : dl =
-  let nb_any, nb_factor = dl_cell_model_stats m in
+  let nb_any, nb_factor, nb_opt = dl_cell_model_stats m in
   Mdl.Code.universal_int_star nb_factor (* encoding total nb of factors/tokens *)
   +. Mdl.Code.universal_int_star nb_any (* encoding total nb of Any's, to favor Nil's *)
   (* +. Mdl.Code.uniform (nb_factor + 2) (* alternate encoding, based on bound for nb_any *) *)
-  +. dl_cell_model_aux ~nb_env_paths nb_any nb_factor m
-and dl_cell_model_aux ~nb_env_paths nb_any nb_factor = function
+  +. Mdl.Code.universal_int_star nb_opt (* encoding total nb of Opt's *)
+  +. dl_cell_model_aux ~nb_env_paths nb_any nb_factor nb_opt m
+and dl_cell_model_aux ~nb_env_paths nb_any nb_factor nb_opt = function
   | Nil ->
-     assert (nb_any = 0 && nb_factor = 0);
+     assert (nb_any = 0 && nb_factor = 0 && nb_opt = 0);
      0.
   | Any ->
-     assert (nb_any = 1 && nb_factor = 0);
+     assert (nb_any = 1 && nb_factor = 0 && nb_opt = 0);
      0.
   | Factor (l,t,r) ->
-     let na_l, nf_l = dl_cell_model_stats l in
-     let na_r, nf_r = dl_cell_model_stats r in
+     let na_l, nf_l, no_l = dl_cell_model_stats l in
+     let na_r, nf_r, no_r = dl_cell_model_stats r in
      assert (na_l + na_r = nb_any);
      assert (nf_l + 1 + nf_r = nb_factor);
+     assert (no_l + no_r = nb_opt);
      Mdl.Code.uniform (nb_factor) (* encoding split of remaining Factor's *)
      +. Mdl.Code.uniform (* encoding split of Any's, values of na_l, na_r *)
           (min nb_any (nf_l + 1) (* maximal possible value for na_l *)
            - max 0 (nb_any - (nf_r + 1)) (* minimal possible value for na_l *)
            + 1)
-     +. dl_cell_model_aux ~nb_env_paths na_l nf_l l
+     +. Mdl.Code.uniform (* encoding split of Opt's, values of no_l, no_r *)
+          (min nb_opt (na_l + nf_l) (* maximal possible no_l *)
+           - max 0 (nb_opt - (na_r + nf_r)) (* minimal possible no_l *)
+           + 1) (* TODO: check for more constraints on nb of Opt's *)
+     +. dl_cell_model_aux ~nb_env_paths na_l nf_l no_l l
      +. dl_token_model ~nb_env_paths t
-     +. dl_cell_model_aux ~nb_env_paths na_r nf_r r
-and dl_cell_model_stats : cell_model -> int * int = function
+     +. dl_cell_model_aux ~nb_env_paths na_r nf_r no_r r
+  | Opt c ->
+     assert (nb_any + nb_factor > 0 && nb_opt > 0);
+     (* cannot be Any or Nil, remains choice between Factor if any and Opt *)
+     Mdl.Code.usage (float nb_opt /. float (nb_opt + nb_factor))
+     +. dl_cell_model_aux ~nb_env_paths nb_any nb_factor (nb_opt - 1) c
+and dl_cell_model_stats : cell_model -> int * int * int (* any, factor, opt *) = function
   (* counting Any and Factor inside doc_model *)
-  | Nil -> 0, 0
-  | Any -> 1, 0
+  | Nil -> 0, 0, 0
+  | Any -> 1, 0, 0
   | Factor (l,t,r) ->
-     let na_l, nf_l = dl_cell_model_stats l in
-     let na_r, nf_r = dl_cell_model_stats r in
-     na_l + na_r, nf_l + 1 + nf_r
+     let na_l, nf_l, no_l = dl_cell_model_stats l in
+     let na_r, nf_r, no_r = dl_cell_model_stats r in
+     na_l + na_r,
+     nf_l + 1 + nf_r,
+     no_l + no_r
+  | Opt c ->
+     let na_c, nf_c, no_c = dl_cell_model_stats c in
+     na_c,
+     nf_c,
+     no_c + 1
 and dl_token_model ~nb_env_paths : token_model -> dl = function
   | Const s ->
      Mdl.Code.usage 0.3
@@ -644,6 +695,13 @@ and cell_encoder_aux : cell_model -> cell_data encoder = function
          let nl_nt_nr = cell_data_length dl, token_data_length dt, cell_data_length dr in
          enc_split nl_nt_nr +. enc_l dl +. enc_t dt +. enc_r dr
       | _ -> assert false)
+  | Opt c ->
+     let dl_choice = 1. in
+     let enc_c = cell_encoder_aux c in
+     (function
+      | DOpt None -> dl_choice
+      | DOpt (Some dc) -> dl_choice +. enc_c dc
+      | _ -> assert false)     
 and cell_encoder_range : cell_model -> Range.t = function
   (* min-max length range for doc_models *)
   | Nil -> Range.make_exact 0
@@ -653,6 +711,9 @@ and cell_encoder_range : cell_model -> Range.t = function
      let range_t = token_encoder_range t in
      let range_r = cell_encoder_range r in
      Range.sum [range_l; range_t; range_r]
+  | Opt c ->
+     let range_c = cell_encoder_range c in
+     Range.opt range_c
 and token_encoder_range : token_model -> Range.t = function
   | Const s -> Range.make_exact (String.length s)
   | Regex _ -> Range.make_open 1
@@ -745,6 +806,7 @@ let apply_cell_refinement (r : cell_refinement) (p : row_path) (lm : row_model) 
     | Left p1, Factor (l,t,r), _ -> Factor (aux_cell p1 l, t, r)
     | Middle p1, Factor (l, t, r), _ -> Factor (l, aux_token p1 t, r)
     | Right p1, Factor (l, t, r), _ -> Factor (l, t, aux_cell p1 r)
+    | _, Opt c, _ -> Opt (aux_cell p c)
     | _ -> assert false
   and aux_token p m =
     match p, m, r with
@@ -760,37 +822,57 @@ let map_reads (f : 'a -> 'b) (reads : 'a list list) : 'b list list  =
     reads
 
 let inter_union_reads
-      (f : 'read -> ('r * 'd) list)
+      (f : 'read -> bool (* can be nil *) * ('r * 'd) list)
       (reads : 'read list list)
-    : ('r, ('read * 'd) list) Mymap.t =
+    : ('r, ('read * 'd option) list) Mymap.t =
   (* given a function extracting refinement information [type 'r] from each read,
      return a set of such ref-info, each mapped to the dl-shortest reads supporting it, along with new data *)
   let process_example reads =
     List.fold_left
-      (fun res read ->
-        List.fold_left
-          (fun res (r,data') ->
-            if Mymap.mem r res
-            then res
-            else Mymap.add r (read,data') res)
-          res (f read))
-      Mymap.empty reads in
+      (fun (nil_read_opt,refs) read ->
+        let isnil_read, refs_read = f read in
+        let nil_read_opt =
+          match nil_read_opt with
+          | Some _ -> nil_read_opt
+          | None ->
+             if isnil_read
+             then Some (read, None)
+             else None in
+        let refs =
+          List.fold_left
+            (fun refs (r,data') ->
+              if Mymap.mem r refs
+              then refs
+              else Mymap.add r (read, Some data') refs)
+            refs refs_read in
+        nil_read_opt, refs)
+      (None, Mymap.empty) reads in
   match reads with
   | [] -> assert false
   | example0_reads :: other_reads ->
-     let res0 =
-       process_example example0_reads
-       |> Mymap.map (fun best_read -> [best_read]) in
-     List.fold_left
-       (fun res exampleI_reads ->
-         let resI = process_example exampleI_reads in
-         Mymap.merge
-           (fun r best_reads_opt best_readI_opt ->
-             match best_reads_opt, best_readI_opt with
-             | Some best_reads, Some best_readI -> Some (best_readI::best_reads)
-             | _ -> None)
-           res resI)
-       res0 other_reads
+     let nil_read_opt0, refs0 = process_example example0_reads in
+     let nil_reads_opt = Option.map (fun nil_read -> [nil_read]) nil_read_opt0 in
+     let refs = refs0 |> Mymap.map (fun best_read -> [best_read]) in
+     let nil_reads_opt, refs =
+       List.fold_left
+         (fun (nil_reads_opt,refs) exampleI_reads ->
+           let nil_readI_opt, refsI = process_example exampleI_reads in
+           let refs =
+             Mymap.merge
+               (fun r best_reads_opt best_readI_opt ->
+                 match best_reads_opt, best_readI_opt, nil_reads_opt, nil_readI_opt with
+                 | Some best_reads, Some best_readI, _, _ -> Some (best_readI :: best_reads)
+                 | Some best_reads, None, _, Some nil_readI -> Some (nil_readI :: best_reads)
+                 | None, Some best_readI, Some nil_reads, _ -> Some (best_readI :: nil_reads)
+                 | _ -> None)
+               refs refsI in
+           let nil_reads_opt =
+             match nil_reads_opt, nil_readI_opt with
+             | Some nil_reads, Some nil_readI -> Some (nil_readI :: nil_reads)
+             | _ -> None in
+           nil_reads_opt, refs)
+         (nil_reads_opt, refs) other_reads in
+     refs
 
 let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows_reads) : (row_path * cell_refinement * dl * row_model) Myseq.t =
   (* NOTE: dl_M does not matter for ranking because invariant of parsing and refinement *)
@@ -822,10 +904,11 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
          inter_union_reads
            (fun (_,data,_) ->
              let s = cell_of_cell_data data in
+             let isnil = (s = "") in
              let rs = (* the nil string *)
-               if s = "" then [(`IsNil, DNil)] else [] in
+               if isnil then [(`IsNil, DNil)] else [] in
              let rs = (* token models *)
-               if s <> ""
+               if not isnil
                then
                  List.fold_left
                    (fun rs tm ->
@@ -850,27 +933,42 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                         special_consts)                      
                else rs in
              let rs = (* constant strings *)
-               if s <> ""
+               if not isnil
                then (`CommonStr s, DFactor (DNil, DToken s, DNil)) :: rs
                else rs in
-             rs)
+             isnil, rs)
            reads in
        let* r_info, best_reads = Mymap.to_seq r_best_reads in
+       let opt, best_reads =
+         if List.for_all (function (_, Some _) -> true | _ -> false) best_reads
+         then false, List.map
+                       (function (read, Some data') -> (read, data') | _ -> assert false)
+                       best_reads
+         else true, List.map
+                      (fun (read, d_opt) -> read, DOpt d_opt)
+                      best_reads in
        let m' =
          match r_info with
-         | `IsNil -> Nil
+         | `IsNil ->
+            assert (not opt);
+            Nil
          | `Token tm ->
             let l, r = (* for both left and right: Nil if all empty strings, Any otherwise *)
               List.fold_left
                 (fun (l,r) (read,data') ->
                   match data' with
-                  | DFactor (DAny sl, _, DAny sr) ->
+                  | DFactor (DAny sl, _, DAny sr)
+                    | DOpt (Some (DFactor (DAny sl, _, DAny sr))) ->
                      (if sl <> "" then Any else l),
                      (if sr <> "" then Any else r)
+                  | DOpt None -> l, r
                   | _ -> assert false)
                 (Nil, Nil) best_reads in
-            Factor (l, tm, r)
-         | `CommonStr s -> Factor (Nil, Const s, Nil) in
+            let m' = Factor (l, tm, r) in
+            if opt then Opt m' else m'
+         | `CommonStr s ->
+            let m' = Factor (Nil, Const s, Nil) in
+            if opt then Opt m' else m' in
        let r = RCell m' in
        let encoder_m' = cell_encoder m' in
        let dl_m' = dl_cell_model ~nb_env_paths m' in
@@ -903,6 +1001,20 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                  | _ -> assert false)
                 reads)
            |> Myseq.map (fun (p,r,dl') -> Right p, r, dl') ]
+    | Opt c ->
+       let opt_reads =
+         List.filter_map
+           (fun ex_reads ->
+             if List.for_all (function (_, DOpt None, _) -> true | _ -> false) ex_reads
+             then None (* ignoring nil-able examples *)
+             else Some (List.filter_map
+                          (function
+                           | (idx, DOpt (Some dc), l) -> Some (idx, dc, l)
+                           | _ -> None)
+                          ex_reads))
+           reads in
+       assert (opt_reads <> []);
+       fold_cell c opt_reads
   and fold_token (m : token_model) reads =
     match m with
     | Const s -> Myseq.empty
@@ -933,9 +1045,15 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                Myseq.fold_left
                  (fun rs e -> (`Expr e, DToken s) :: rs)
                  rs (Expr.exprset_to_seq es) in
-             rs)
+             false (* not nil *), rs)
            reads in
        let* r_info, best_reads = Mymap.to_seq r_best_reads in
+       let best_reads =
+         List.map
+           (function
+            | (read, Some data') -> read, data'
+            | _ -> assert false) (* there should not be nil-able read *)
+         best_reads in
        let m' =
          match r_info with
          | `CommonStr s -> Const s
