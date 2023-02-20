@@ -262,7 +262,8 @@ let row_bindings (ld : row_data) : (row_path * Expr.value) list =
        let acc = aux_cell (fun p -> ctx (Left p)) l acc in
        let acc = aux_token (fun p -> ctx (Middle p)) t acc in
        acc
-    | DOpt None -> acc (* TODO: should we add a binding to value `None ? *)
+    | DOpt None ->
+       (* (ctx ThisDoc, `None) :: *) acc
     | DOpt (Some c) ->
        let acc = aux_cell ctx c acc in
        (* (ctx ThisDoc, `String (cell_of_cell_data d)) :: *) acc
@@ -828,16 +829,23 @@ let inter_union_reads
   (* given a function extracting refinement information [type 'r] from each read,
      return a set of such ref-info, each mapped to the dl-shortest reads supporting it, along with new data *)
   let process_example reads =
+    assert (reads <> []);
     List.fold_left
+      (* nil_read_opt is Some (read0, None) if all reads are nil, otherwise None *)
       (fun (nil_read_opt,refs) read ->
         let isnil_read, refs_read = f read in
         let nil_read_opt =
           match nil_read_opt with
-          | Some _ -> nil_read_opt
+          | None -> None
+          | Some _ ->
+             if isnil_read
+             then nil_read_opt
+             else None in
+(*          | Some _ -> nil_read_opt
           | None ->
              if isnil_read
              then Some (read, None)
-             else None in
+             else None in *)
         let refs =
           List.fold_left
             (fun refs (r,data') ->
@@ -846,7 +854,7 @@ let inter_union_reads
               else Mymap.add r (read, Some data') refs)
             refs refs_read in
         nil_read_opt, refs)
-      (None, Mymap.empty) reads in
+      (Some (List.hd reads, None), Mymap.empty) reads in
   match reads with
   | [] -> assert false
   | example0_reads :: other_reads ->
