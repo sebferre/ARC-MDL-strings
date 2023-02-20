@@ -186,12 +186,17 @@ and xp_cell_data (print : Xprint.t) = function
      xp_string print s;
      print#string "</span>"
   | DFactor (l,t,r) ->
+     print#string "<div class=\"data-factor\">";
      xp_cell_data print l;
      xp_token_data print t;
-     xp_cell_data print r
-  | DOpt (None) -> ()
+     xp_cell_data print r;
+     print#string "</div>"
+  | DOpt (None) ->
+     print#string "<div class=\"data-opt\">∅</div>"
   | DOpt (Some c) ->
-     xp_cell_data print c
+     print#string "<div class=\"data-opt\">";
+     xp_cell_data print c;
+     print#string "</div>"
 and xp_token_data print = function
   | DToken s ->
      print#string "<span class=\"data-token\">";

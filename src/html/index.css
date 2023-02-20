@@ -6,7 +6,7 @@ pre.inline {
     background-color: transparent;
 }
 
-.model-any {
+.model-any, .data-any {
     border: 1px solid #ccc;
     border-radius: 2px;
     background-color: #eee;
@@ -16,11 +16,11 @@ pre.inline {
 .model-nil {
 }
 
-.model-factor {
+.model-factor, .data-factor {
     display: inline-block;
 }
 
-.model-opt {
+.model-opt, .data-opt {
     display: inline-block;
     border: 2px dashed;
     border-radius: 2px;
@@ -51,13 +51,6 @@ pre.inline {
     border: 1px solid #ccc;
     border-radius: 2px;
     background-color: #ffffbb;
-    padding: 0px 4px 0px 4px;
-}
-
-.data-any {
-    border: 1px solid #ccc;
-    border-radius: 2px;
-    background-color: #eee;
     padding: 0px 4px 0px 4px;
 }
 
