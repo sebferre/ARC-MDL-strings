@@ -199,7 +199,7 @@ and xp_cell_data (print : Xprint.t) = function
      xp_cell_data print r;
      print#string "</div>"
   | DOpt (None) ->
-     print#string "<div class=\"data-opt\">∅</div>"
+     print#string "<div class=\"data-opt\">ε</div>"
   | DOpt (Some c) ->
      print#string "<div class=\"data-opt\">";
      xp_cell_data print c;
@@ -808,7 +808,7 @@ type cell_refinement =
   | RToken of token_model (* token specialization *)
 
 let xp_cell_refinement (print : Xprint.t) = function
-  | RCell Nil -> print#string "<span class=\"model-nil\">∅</span>"
+  | RCell Nil -> print#string "<span class=\"model-nil\">ε</span>"
   | RCell cell -> xp_cell_model print cell
   | RToken tok -> xp_token_model print tok
 let pp_cell_refinement = Xprint.to_stdout xp_cell_refinement
