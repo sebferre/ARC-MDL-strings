@@ -12,21 +12,19 @@ open Utilities
 type date = { year : int; month : int; day : int }
 type time = { hours : int; minutes : int; seconds : int }
 
-exception None_value
-          
 type value =
-  [ `String of string
+  [ `Null (* undefined, missing value *)
+  | `String of string
   | `Int of int
   | `Date of date
   | `Time of time
-  | `None
   | `List of value list
   | `Fun of (value -> value result) ]
 
 (* extraction functions, not used much *)
+(* deprecated
 let string_of_value : value -> string result = function
   | `String s -> Result.Ok s
-  | `None -> Result.Error None_value
   | _ -> Result.Error (Invalid_argument "Expr.string_of_value") (* an ill-formed expression was built *)
 let int_of_value : value -> int result = function
   | `Int i -> Result.Ok i
@@ -40,7 +38,8 @@ let time_of_value : value -> time result = function
 let list_of_value (elt_of_value : value -> 'a result) : value -> 'a list result = function
   | `List lv -> list_map_result elt_of_value lv
   | _ -> Result.Error (Invalid_argument "Expr.list_of_value")
-       
+ *)
+  
 (* functions *)
 
 module Funct =
@@ -170,8 +169,8 @@ and eval_unary f v1 =
   | `Seconds, `Time t1 ->
      let res = Funct.seconds t1 in
      Result.Ok (`Int res)
-  | _, `None ->
-     Result.Ok `None
+  | _, `Null ->
+     Result.Ok `Null
   | _, `List l1 ->
      let| lres = list_map_result (eval_unary f) l1 in
      Result.Ok (`List lres)
@@ -189,10 +188,10 @@ and eval_binary f v1 v2 =
   | `Map_list, `Fun fun1, `List l2 ->     
      let| lres = Funct.map_list fun1 l2 in
      Result.Ok (`List lres)
-  | _, `None, _ ->
-     Result.Ok `None
-  | _, _, `None ->
-     Result.Ok `None
+  | _, `Null, _ ->
+     Result.Ok `Null
+  | _, _, `Null ->
+     Result.Ok `Null
   | _, `List l1, `List l2 ->
      if List.length l1 = List.length l2
      then

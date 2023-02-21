@@ -25,6 +25,11 @@ let rec list_update (f : 'a -> 'a) (i : int) : 'a list -> 'a list = function
 type 'a result = ('a,exn) Result.t
 let ( let| ) res f = Result.bind res f [@@inline]
 
+let catch (r : 'a result) (h : exn -> 'a result) : 'a result =
+  match r with
+  | Result.Ok _ -> r
+  | Result.Error exn -> h exn
+                   
 let rec list_map_result (f : 'a -> ('b,'c) Result.t) (lx : 'a list) : ('b list, 'c) Result.t =
   match lx with
   | [] -> Result.Ok []

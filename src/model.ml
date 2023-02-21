@@ -243,7 +243,7 @@ and cell_find (p : cell_path) (d : cell_data) : Expr.value result =
   | Left p1, DFactor (l,_,_) -> cell_find p1 l
   | Middle p1, DFactor (_,t,_) -> token_find p1 t
   | Right p1, DFactor (_,_,r) -> cell_find p1 r
-  | _, DOpt None -> Result.Ok `None
+  | _, DOpt None -> Result.Ok `Null
   | _, DOpt (Some c) -> cell_find p c
   | _ -> assert false
 and token_find p d =
@@ -267,8 +267,7 @@ let row_bindings (ld : row_data) : (row_path * Expr.value) list =
        let acc = aux_cell (fun p -> ctx (Left p)) l acc in
        let acc = aux_token (fun p -> ctx (Middle p)) t acc in
        acc
-    | DOpt None ->
-       (* (ctx ThisDoc, `None) :: *) acc
+    | DOpt None -> acc
     | DOpt (Some c) ->
        let acc = aux_cell ctx c acc in
        (* (ctx ThisDoc, `String (cell_of_cell_data d)) :: *) acc
@@ -278,6 +277,8 @@ let row_bindings (ld : row_data) : (row_path * Expr.value) list =
   in
   aux_row (fun p -> p) ld []
 
+exception NullExpr (* error for expressions that contains a null value *)
+  
 let rec row_apply (lm : row_model) (env : env) : row_model result =
   list_map_result
     (fun m -> cell_apply m env)
@@ -294,16 +295,19 @@ and cell_apply (m : cell_model) (env : env) : cell_model result =
   | Opt c ->
      (match cell_apply c env with
       | Result.Ok c' -> Result.Ok (Opt c')
-      | Result.Error Expr.None_value -> Result.Ok Nil (* some reference is unbound *)
-      | other_error -> other_error)
+      | Result.Error NullExpr -> Result.Ok Nil
+      | Result.Error _ as r -> r)
 and token_apply t env : token_model result =
   match t with
   | Const s -> Result.Ok (Const s)
   | Regex re -> Result.Ok (Regex re)
   | Expr e ->
      let| v = Expr.eval (fun p -> row_find p env) e in
-     let| s = Expr.string_of_value v in     
-     Result.Ok (Const s)
+     (match v with
+      | `String s -> Result.Ok (Const s)
+      (* TODO: consider converting other values to strings *)
+      | `Null -> Result.Error NullExpr
+      | _ -> Result.Error (Invalid_argument "Model.token_apply: string expected as expression value"))
 
      
 (* generate *)
