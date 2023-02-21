@@ -292,8 +292,10 @@ and cell_apply (m : cell_model) (env : env) : cell_model result =
      let| r' = cell_apply r env in
      Result.Ok (Factor (l',t',r'))
   | Opt c ->
-     let| c' = cell_apply c env in
-     Result.Ok (Opt c')
+     (match cell_apply c env with
+      | Result.Ok c' -> Result.Ok (Opt c')
+      | Result.Error Expr.None_value -> Result.Ok Nil (* some reference is unbound *)
+      | other_error -> other_error)
 and token_apply t env : token_model result =
   match t with
   | Const s -> Result.Ok (Const s)
@@ -816,7 +818,7 @@ let apply_cell_refinement (r : cell_refinement) (p : row_path) (lm : row_model) 
     | _ -> assert false
   and aux_token p m =
     match p, m, r with
-    | ThisToken, Regex _, RToken tok -> tok
+    | ThisToken, (Const _ | Regex _), RToken tok -> tok
     | _ -> assert false
   in
   aux_row p lm
@@ -1018,35 +1020,41 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
        let opt_reads =
          List.filter_map
            (fun ex_reads ->
-             if List.for_all (function (_, DOpt None, _) -> true | _ -> false) ex_reads
+             let defined_ex_reads =
+               List.filter_map
+                 (fun (idx, d, l) ->
+                   match d with
+                   | DOpt (Some dc) -> Some (idx, dc, l)
+                   | DOpt None | DNil -> None
+                   | _ -> Xprint.to_stdout xp_cell_data d; flush stdout; assert false)
+                 ex_reads in
+             if defined_ex_reads = []
              then None (* ignoring nil-able examples *)
-             else Some (List.filter_map
-                          (function
-                           | (idx, DOpt (Some dc), l) -> Some (idx, dc, l)
-                           | _ -> None)
-                          ex_reads))
+             else Some defined_ex_reads)
            reads in
        assert (opt_reads <> []);
        fold_cell c opt_reads
   and fold_token (m : token_model) reads =
     match m with
-    | Const s -> Myseq.empty
-    | Regex re ->
+    | Const _ | Regex _ ->
        let encoder_m = token_encoder m in
        let dl_m = dl_token_model ~nb_env_paths m in
        let re'_candidates =
-         match re with
-         | Content -> [Word; Decimal]
-         | Word -> [Letters; Digits]
-         | Decimal -> [Digits]
-         | Separators -> [Spaces]
+         match m with
+         | Regex Content -> [Word; Decimal]
+         | Regex Word -> [Letters; Digits]
+         | Regex Decimal -> [Digits]
+         | Regex Separators -> [Spaces]
          | _ -> [] in
        let r_best_reads : ([`CommonStr of string | `RE of regex_model | `Expr of expr], _) Mymap.t =
          inter_union_reads
            (fun (idx,data,_) ->
              let s = token_of_token_data data in
              let es = Expr.index_lookup (`String s) idx in
-             let rs = if s <> "" then [(`CommonStr s, DToken s)] else [] in
+             let rs =
+               if s <> "" && (match m with Regex _ -> true | _ -> false)
+               then [(`CommonStr s, DToken s)]
+               else [] in
              let rs =
                List.fold_left
                  (fun rs re' ->

@@ -11,7 +11,9 @@ open Utilities
          
 type date = { year : int; month : int; day : int }
 type time = { hours : int; minutes : int; seconds : int }
-        
+
+exception None_value
+          
 type value =
   [ `String of string
   | `Int of int
@@ -24,6 +26,7 @@ type value =
 (* extraction functions, not used much *)
 let string_of_value : value -> string result = function
   | `String s -> Result.Ok s
+  | `None -> Result.Error None_value
   | _ -> Result.Error (Invalid_argument "Expr.string_of_value") (* an ill-formed expression was built *)
 let int_of_value : value -> int result = function
   | `Int i -> Result.Ok i
