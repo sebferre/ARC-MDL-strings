@@ -147,7 +147,14 @@ and xp_cell_model (print : Xprint.t) ?(ctx : cell_ctx option) = function
      print#string "</div>?&nbsp;"
 and xp_token_model print ?(ctx : token_ctx option) = function
   | Const s ->
-     print#string "<span class=\"model-const\">";
+     let p_opt = ctx |> Option.map (fun ctx -> ctx ThisToken) in
+     print#string "<span class=\"model-const\"";
+     p_opt |> Option.iter (* print path as tooltip *)
+                (fun p ->
+                  print#string " title=\"";
+                  print#string (id_of_row_path p);
+                  print#string "\"");
+     print#string ">";
      xp_string print s;
      print#string "</span>"
   | Regex re ->
