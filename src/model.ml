@@ -859,11 +859,6 @@ let inter_union_reads
              if isnil_read
              then nil_read_opt
              else None in
-(*          | Some _ -> nil_read_opt
-          | None ->
-             if isnil_read
-             then Some (read, None)
-             else None in *)
         let refs =
           List.fold_left
             (fun refs (r,data') ->
