@@ -64,4 +64,10 @@ let opt : t -> t = function
   | Closed (_,b) -> Closed (0,b)
   | Open _ -> Open 0
 
-              
+let union r1 r2 =
+  match r1, r2 with
+  | Closed (a1,b1), Closed (a2,b2) -> Closed (min a1 a2, max b1 b2)
+  | Closed (a1,b1), Open a2 -> Open (min a1 a2)
+  | Open a1, Closed (a2,b2) -> Open (min a1 a2)
+  | Open a1, Open a2 -> Open (min a1 a2)
+
