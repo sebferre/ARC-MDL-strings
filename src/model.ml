@@ -92,6 +92,11 @@ let xp_string (print : Xprint.t) (s : string) =
   print#string "</pre>"
 let pp_string = Xprint.to_stdout xp_string
 
+let xp_brackets (print : Xprint.t) (xp : Xprint.t -> unit) : unit =
+  print#string "<div class=\"model-brackets\">";
+  xp print;
+  print#string "</div>"
+              
 let rec id_of_row_path (p : row_path) : string =
   match p with
   | Col (i,cp) ->
@@ -126,14 +131,19 @@ and xp_token_path print = function
   | ThisToken -> () *)
 let pp_row_path = Xprint.to_stdout xp_row_path
 
+let xp_cell_brackets ~prio_ctx ~prio print xp =
+  if prio <= prio_ctx
+  then xp print
+  else xp_brackets print xp
+
 let rec xp_row_model (print : Xprint.t) ?(ctx : row_ctx option) lm =
   List.iteri
     (fun i m ->
       let ctx_cell = ctx |> Option.map (fun ctx -> (fun p -> ctx (Col (i,p)))) in
       if i > 0 then print#string "</br>";
-      xp_cell_model print ?ctx:ctx_cell m)
+      xp_cell_model ~prio_ctx:2 print ?ctx:ctx_cell m)
     lm
-and xp_cell_model (print : Xprint.t) ?(ctx : cell_ctx option) = function
+and xp_cell_model ?(prio_ctx = 2) (print : Xprint.t) ?(ctx : cell_ctx option) = function
   | Empty ->
      print#string "∅"
   | Nil -> ()
@@ -143,33 +153,39 @@ and xp_cell_model (print : Xprint.t) ?(ctx : cell_ctx option) = function
      let ctx_l = ctx |> Option.map (fun ctx -> (fun p -> ctx (Left p))) in
      let ctx_t = ctx |> Option.map (fun ctx -> (fun p -> ctx (Middle p))) in
      let ctx_r = ctx |> Option.map (fun ctx -> (fun p -> ctx (Right p))) in
-     print#string "<div class=\"model-factor\">";
-     xp_cell_model print ?ctx:ctx_l l;
-     xp_token_model print ?ctx:ctx_t t;
-     xp_cell_model print ?ctx:ctx_r r;
-     print#string "</div>"
+     xp_cell_brackets ~prio_ctx ~prio:0 print
+       (fun print ->
+         print#string "<div class=\"model-factor\">";
+         xp_cell_model ~prio_ctx:0 print ?ctx:ctx_l l;
+         xp_token_model print ?ctx:ctx_t t;
+         xp_cell_model ~prio_ctx:0 print ?ctx:ctx_r r;
+         print#string "</div>")
   | Alt (c, Nil) (* Opt c *) ->
-     let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (1, p)))) in     
-     print#string "<div class=\"model-opt\">";
-     xp_cell_model print ?ctx:ctx_1 c;
-     print#string "</div>?&nbsp;"
+     let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (1, p)))) in
+     xp_cell_brackets ~prio_ctx ~prio:1 print
+       (fun print ->
+         print#string "<div class=\"model-opt\">";
+         xp_cell_model ~prio_ctx:1 print ?ctx:ctx_1 c;
+         print#string " <span class=\"model-meta-operator\">?</span>";
+         print#string "</div>")
   | Alt (Nil, c) (* Opt c *) ->
      let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (2, p)))) in     
-     print#string "<div class=\"model-opt\">";
-     xp_cell_model print ?ctx:ctx_2 c;
-     print#string "</div>?&nbsp;"
+     xp_cell_brackets ~prio_ctx ~prio:1 print
+       (fun print ->
+         print#string "<div class=\"model-opt\">";
+         xp_cell_model ~prio_ctx:1 print ?ctx:ctx_2 c;
+         print#string " <span class=\"model-meta-operator\">?</span>";
+         print#string "</div>")
   | Alt (c1,c2) ->
      let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (1, p)))) in
      let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (2, p)))) in
-     print#string " (";
-     print#string "<div class=\"model-opt\">";
-     xp_cell_model print ?ctx:ctx_1 c1;
-     print#string "</div>";
-     print#string " | ";
-     print#string "<div class=\"model-opt\">";
-     xp_cell_model print ?ctx:ctx_2 c2;
-     print#string "</div>";
-     print#string ") "
+     xp_cell_brackets ~prio_ctx ~prio:2 print
+       (fun print ->
+         print#string "<div class=\"model-alt\">";
+         xp_cell_model ~prio_ctx:2 print ?ctx:ctx_1 c1;
+         print#string " <span class=\"model-meta-operator\">|</span> ";
+         xp_cell_model ~prio_ctx:2 print ?ctx:ctx_2 c2;
+         print#string "</div>")
 and xp_token_model print ?(ctx : token_ctx option) = function
   | Const s ->
      let p_opt = ctx |> Option.map (fun ctx -> ctx ThisToken) in
@@ -211,25 +227,31 @@ let rec xp_row_data (print : Xprint.t) ld =
       if i > 0 then print#string "</br>";
       xp_cell_data print d)
     ld
-and xp_cell_data (print : Xprint.t) = function
+and xp_cell_data ?(prio_ctx = 0) (print : Xprint.t) = function
   | DNil -> ()
   | DAny s ->
      print#string "<span class=\"data-any\">";
      xp_string print s;
      print#string "</span>"
   | DFactor (l,t,r) ->
-     print#string "<div class=\"data-factor\">";
-     xp_cell_data print l;
-     xp_token_data print t;
-     xp_cell_data print r;
-     print#string "</div>"
+     xp_cell_brackets ~prio_ctx ~prio:0 print
+       (fun print ->
+         print#string "<div class=\"data-factor\">";
+         xp_cell_data ~prio_ctx:0 print l;
+         xp_token_data print t;
+         xp_cell_data ~prio_ctx:0 print r;
+         print#string "</div>")
   | DAlt (i, DNil) ->
-     print#string "<div class=\"data-opt\">ε</div>"
+     xp_cell_brackets ~prio_ctx ~prio:1 print
+       (fun print ->
+         print#string "<div class=\"data-opt\">ε</div>")
   | DAlt (i,c) -> (* TODO: find better repr than 1/2: to indicate valid branch *)
-     print#string "<div class=\"data-opt\">";
-     (* print#int i; *)
-     xp_cell_data print c;
-     print#string "</div>"
+     xp_cell_brackets ~prio_ctx ~prio:2 print
+       (fun print ->
+         print#string "<div class=\"data-alt\">";
+         (* print#int i; *)
+         xp_cell_data ~prio_ctx:2 print c;
+         print#string "</div>")
 and xp_token_data print = function
   | DToken s ->
      print#string "<span class=\"data-token\">";
@@ -243,7 +265,7 @@ let string_of_row_data = Xprint.to_string xp_row_data
 
 let rec row_of_row_data (ld : row_data) : string list =
   List.map cell_of_cell_data ld
-and cell_of_cell_data : cell_data -> string = function
+ and cell_of_cell_data : cell_data -> string = function
   | DNil -> ""
   | DAny s -> s
   | DFactor (l,t,r) -> cell_of_cell_data l
@@ -893,7 +915,7 @@ let xp_support (print : Xprint.t) (supp : int) =
 
 let xp_cell_refinement (print : Xprint.t) = function
   | RCell (supp,Nil) -> print#string "<span class=\"model-nil\">ε</span>"; xp_support print supp
-  | RCell (supp,cell) -> xp_cell_model print cell; xp_support print supp
+  | RCell (supp,cell) -> xp_cell_model ~prio_ctx:2 print cell; xp_support print supp
   | RToken tok -> xp_token_model print tok
 let pp_cell_refinement = Xprint.to_stdout xp_cell_refinement
            

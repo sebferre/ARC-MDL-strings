@@ -6,6 +6,10 @@ pre.inline {
     background-color: transparent;
 }
 
+.model-meta-operator {
+    font-size: 125%;
+}
+
 .model-any, .data-any {
     border: 1px solid #ccc;
     border-radius: 2px;
@@ -16,15 +20,19 @@ pre.inline {
 .model-nil {
 }
 
-.model-factor, .data-factor {
+.model-factor, .model-opt, .model-alt {
     display: inline-block;
 }
 
-.model-opt, .data-opt {
+.data-factor, .data-opt, .data-alt {
     display: inline-block;
-    border: 2px dashed;
+}
+
+.model-brackets, .data-brackets {
+    display: inline-block;
+    border: 2px dashed #888;
     border-radius: 2px;
-    padding: 2px 2px;
+    padding: 0px 2px;
     margin: 2px 2px;
 }
 
@@ -292,14 +300,14 @@ select {
     width: 95%;
     margin-left: 0px;
     margin-right: 0px;
-    margin-top:8px;
+    margin-top:0px;
     margin-bottom: 0px;
     padding-right: 0px;
     white-space: nowrap;
 
 //    display:inline-block;
     vertical-align:top;
-    line-height:100%;
+    line-height:140%;
 //    white-space:normal;
 
 }
