@@ -1153,20 +1153,25 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
             if alt then Myseq.empty
             else Myseq.return m'
          | `Token tm ->
-            let l, r, c2 = (* for both left and right: Nil if all empty strings, Any otherwise *)
+            let ts, l, r, c2 = (* token string set, left and right (Nil if all empty strings, Any otherwise), alternative (Nil if all alts are empty) *)
               List.fold_left
-                (fun (l,r,c2) (read,data') ->
+                (fun (ts,l,r,c2) (read,data') ->
                   match data' with
-                  | DFactor (DAny sl, _, DAny sr)
-                    | DAlt (1, DFactor (DAny sl, _, DAny sr)) ->
+                  | DFactor (DAny sl, DToken st, DAny sr)
+                    | DAlt (1, DFactor (DAny sl, DToken st, DAny sr)) ->
+                     (Bintree.add st ts),
                      (if sl <> "" then Any else l),
                      (if sr <> "" then Any else r),
                      c2
                   | DAlt (2, DAny sc2) ->
-                     l, r, (if sc2 <> "" then Any else c2)
+                     ts, l, r, (if sc2 <> "" then Any else c2)
                   | _ -> assert false)
-                (Nil, Nil, Nil) best_reads in
-            let m' = Factor (l, tm, r) in
+                (Bintree.empty, Nil, Nil, Nil) best_reads in
+            let tm' = (* shortcut: replacing constant regex by a Const string *)
+              match tm with
+              | Regex _ when Bintree.cardinal ts = 1 -> Const (Bintree.choose ts)
+              | _ -> tm in
+            let m' = Factor (l, tm', r) in
             let m'= if alt then Alt (m', c2) else m' in
             Myseq.return m'
          | `CommonStr s ->
