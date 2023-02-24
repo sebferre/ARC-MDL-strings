@@ -1114,15 +1114,15 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                    rs
                    (List.map
                       (fun re -> Regex re)
-                      [Content; Word; Letters; Decimal; Digits; Separators; Spaces]
+                      [(*Content;*) Word; Letters; Decimal; Digits; (*Separators;*) Spaces] (* ignoring mixed letter classes because they are too eager *)
                     @ List.map
                         (fun spe -> Const spe)
-                        special_consts)                      
+                        special_consts)
                else rs in
-             let rs = (* constant strings *)
+             (* let rs = (* constant strings *)
                if s <> ""
                then (`CommonStr s, DFactor (DNil, DToken s, DNil)) :: rs
-               else rs in
+               else rs in *) (* disable to avoid unstructured constant strings like ' 4/11', must be instance of a regexp *)
              rs)
            reads in
        let* r_info, best_reads = Mymap.to_seq r_best_reads in
