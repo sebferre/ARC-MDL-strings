@@ -777,7 +777,8 @@ and cell_encoder (m : cell_model) : cell_data encoder =
   Mdl.Code.universal_int_star n
   +. enc_m d
 and cell_encoder_aux : cell_model -> cell_data encoder = function
-  | Empty -> assert false
+  | Empty ->
+     (fun _ -> assert false)
   | Nil ->
      (function
       | DNil | DAny "" -> 0.
@@ -818,15 +819,17 @@ and cell_encoder_aux : cell_model -> cell_data encoder = function
          enc_split nl_nt_nr +. enc_l dl +. enc_t dt +. enc_r dr
       | _ -> assert false)
   | Alt (c1,c2) ->
-     let dl_choice = Mdl.Code.uniform 2 in
+     let dl_choice1, dl_choice2 =
+       match c1, c2 with
+       | Empty, _ | _, Empty -> 0., 0. (* no choice to be made *)
+       | _ -> Mdl.Code.usage 0.6, Mdl.Code.usage 0.4 in (* favoring fst alternative *)
      let enc_c1 = cell_encoder_aux c1 in
      let enc_c2 = cell_encoder_aux c2 in
      (function
-      | DAlt (1,dc) -> dl_choice +. enc_c1 dc
-      | DAlt (2,dc) -> dl_choice +. enc_c2 dc
+      | DAlt (1,dc) -> dl_choice1 +. enc_c1 dc
+      | DAlt (2,dc) -> dl_choice2 +. enc_c2 dc
       | _ -> assert false)
-and cell_encoder_range : cell_model -> Range.t = function
-  (* min-max length range for doc_models *)
+and cell_encoder_range : cell_model -> Range.t = function  (* min-max length range for doc_models *)
   | Empty -> assert false
   | Nil -> Range.make_exact 0
   | Any -> Range.make_open 0
@@ -835,6 +838,9 @@ and cell_encoder_range : cell_model -> Range.t = function
      let range_t = token_encoder_range t in
      let range_r = cell_encoder_range r in
      Range.sum [range_l; range_t; range_r]
+  | Alt (Empty,Empty) -> assert false
+  | Alt (c1,Empty) -> cell_encoder_range c1
+  | Alt (Empty,c2) -> cell_encoder_range c2
   | Alt (c1,c2) ->
      let range_c1 = cell_encoder_range c1 in
      let range_c2 = cell_encoder_range c2 in
@@ -872,7 +878,7 @@ let read_row ~(env : env) (m0 : row_model) (s : string list) : row_read list res
   let parses =
     let* data = row_parse m s in
     let dl = (* QUICK *)
-      let dl_data = row_encoder m0 data in
+      let dl_data = row_encoder m data in
       (* rounding before sorting to absorb float error accumulation *)
       dl_round dl_data in
     Myseq.return (env, data, dl) in
@@ -1291,12 +1297,12 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                | (read, Result.Ok data') -> Result.Ok (read, data')
                | _ -> Result.Error (Failure "no Alt in tokens"))
               best_reads) in
-       let* m' =
+       let m' =
          match r_info with
-         | `CommonStr s -> Myseq.return (Const s)
-         | `RE re' -> Myseq.return (Regex re')
-         | `Expr e -> (* checking that [e] is undefined on other reads *)
-            if true || List.for_all
+         | `CommonStr s -> Const s
+         | `RE re' -> Regex re'
+         | `Expr e ->
+            (* List.for_all (* checking that [e] is undefined in other reads => does not seems the best way to treat Gulwani#7 *)
                  (fun other_read ->
                    List.for_all
                      (fun (env,_,_,_) ->
@@ -1304,9 +1310,8 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                        | Result.Ok `Null -> true
                        | _ -> false)
                      other_read)
-                 other_reads
-            then Myseq.return (Expr e)
-            else Myseq.empty in
+                 other_reads *)
+            Expr e in
        let r = RToken m' in
        let encoder_m' = token_encoder m' in
        let dl_m' = dl_token_model ~nb_env_paths m' in
