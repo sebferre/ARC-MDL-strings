@@ -19,7 +19,15 @@ let rec list_update (f : 'a -> 'a) (i : int) : 'a list -> 'a list = function
      then f x :: l
      else x :: list_update f (i-1) l
 
-  
+let rec list_partition_map (f : 'a -> 'b option) (selected : 'a list) (others : 'a list) : 'b list * 'a list =
+  match selected with
+  | [] -> [], others
+  | x::r ->
+     let r1, r2 = list_partition_map f r others in
+     ( match f x with
+     | None -> r1, x::r2
+     | Some y -> y::r1, r2 )
+    
 (* result *)
         
 type 'a result = ('a,exn) Result.t

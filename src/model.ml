@@ -329,6 +329,9 @@ let row_bindings (ld : row_data) : (row_path * Expr.value) list =
   in
   aux_row (fun p -> p) ld []
 
+let eval_expr_on_env e env =
+  Expr.eval (fun p -> row_find p env) e
+  
 exception NullExpr (* error for expressions that contains a null value *)
   
 let rec row_apply (lm : row_model) (env : env) : row_model result =
@@ -947,14 +950,16 @@ let map_reads (f : 'a -> 'b) (reads : 'a list list) : 'b list list  =
       List.map f example_reads)
     reads
 
-let filter_map_reads (f : 'a -> 'b option) (reads : 'a list list) : 'b list list  =
-  List.filter_map
+let partition_map_reads (f : 'a -> 'b option) (selected_reads : 'a list list) (other_reads : 'a list list) : 'b list list * 'a list list =
+  (* returns: 1) the result of applying [f] on [selected_reads] when [f] is defined, and 2) the complement part of [selected_reads] to [others] *)
+  list_partition_map
     (fun example_reads ->
       let defined_example_reads = List.filter_map f example_reads in
       if defined_example_reads = []
       then None
       else Some defined_example_reads)
-    reads
+    selected_reads
+    other_reads
 
 (* let inter_union_reads
       (f : 'read -> bool (* can be nil *) * ('r * 'd) list)
@@ -1064,7 +1069,7 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
   let reads = (* replacing env's with expression index's over them *)
     map_reads
       (fun (env,data,dl) ->
-        (Expr.make_index (row_bindings env), data, dl))
+        (env, Expr.make_index (row_bindings env), data, dl))
       rsr.reads in
   let rec fold_row lm reads =
     Myseq.interleave
@@ -1072,14 +1077,14 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
          (fun i m ->
            let m_reads =
              map_reads
-               (fun (env, ld, dl) ->
+               (fun (env, idx, ld, dl) ->
                  let d_i = try List.nth ld i with _ -> assert false in
-                 (env, d_i, dl))
+                 (env, idx, d_i, dl))
                reads in
-           fold_cell m m_reads
+           fold_cell m m_reads []
            |> Myseq.map (fun (p,r,dl') -> (Col (i,p), r, dl')))
          lm)
-  and fold_cell m reads =
+  and fold_cell m selected_reads other_reads =
     if reads = [] then Myseq.empty else
     match m with
     | Empty -> Myseq.empty
@@ -1089,8 +1094,8 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
        let dl_m = dl_cell_model ~nb_env_paths m in
        let r_best_reads : ([`IsNil | `Token of token_model | `CommonStr of string], _) Mymap.t =
          inter_union_reads
-           (fun (_,data,_) -> cell_of_cell_data data)
-           (fun (_,data,_) ->
+           (fun (_,_,data,_) -> cell_of_cell_data data)
+           (fun (_,_,data,_) ->
              let s = cell_of_cell_data data in
              let rs = (* the nil string *)
                if s = "" then [(`IsNil, DNil)] else [] in
@@ -1124,7 +1129,7 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                then (`CommonStr s, DFactor (DNil, DToken s, DNil)) :: rs
                else rs in *) (* disable to avoid unstructured constant strings like ' 4/11', must be instance of a regexp *)
              rs)
-           reads in
+           selected_reads in
        let* r_info, best_reads = Mymap.to_seq r_best_reads in
        let supp, nb =
          List.fold_left
@@ -1192,7 +1197,7 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
        let dl' =
          dl_M -. dl_m +. dl_m'
          +. !alpha *. Mdl.sum best_reads
-                        (fun ((_,data,dl_D), data') ->
+                        (fun ((_,_,data,dl_D), data') ->
                           dl_D -. encoder_m data +. encoder_m' data') in
        Myseq.return (ThisDoc, r, dl')
     | Factor (l,t,r) ->
@@ -1200,43 +1205,50 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
          [ fold_token t
              (map_reads
                 (function
-                 | (idx, DFactor (_,dt,_), l) -> (idx, dt, l)
+                 | (env, idx, DFactor (_,dt,_), l) -> (env, idx, dt, l)
                  | _ -> assert false)
-                reads)
+                selected_reads)
+             other_reads
            |> Myseq.map (fun (p,r,dl') -> Middle p, r, dl');
            fold_cell l
              (map_reads
                 (function
-                 | (idx, DFactor (dl,_,_), l) -> (idx, dl, l)
+                 | (env, idx, DFactor (dl,_,_), l) -> (env, idx, dl, l)
                  | _ -> assert false)
-                reads)
+                selected_reads)
+             other_reads
            |> Myseq.map (fun (p,r,dl') -> Left p, r, dl');
            fold_cell r
              (map_reads
                 (function
-                 | (idx, DFactor (_,_,dr), l) -> (idx, dr, l)
+                 | (env, idx, DFactor (_,_,dr), l) -> (env, idx, dr, l)
                  | _ -> assert false)
-                reads)
+                selected_reads)
+             other_reads
            |> Myseq.map (fun (p,r,dl') -> Right p, r, dl') ]
     | Alt (c1,c2) ->
        Myseq.concat
-         [ fold_cell c1
-             (filter_map_reads
+         [ (let sel1, other1 =
+              partition_map_reads
                 (function
-                 | (idx, DAlt (i, dc), l) ->
-                    if i = 1 then Some (idx, dc, l) else None
+                 | (env, idx, DAlt (i, dc), l) ->
+                    if i = 1 then Some (env, idx, dc, l) else None
                  | read -> Some read) (* for when the Alt has collapsed after evaluation *)
-                reads)
+                selected_reads
+                other_reads in
+            fold_cell c1 sel1 other1)
            |> Myseq.map (fun (p,r,dl') -> Index (1,p), r, dl');
-           fold_cell c2
-             (filter_map_reads
+           (let sel2, other2 =
+              partition_map_reads
                 (function
-                 | (idx, DAlt (i,dc), l) ->
-                    if i = 2 then Some (idx, dc, l) else None
-                 | read -> Some read)
-                reads)
+                 | (env, idx, DAlt (i,dc), l) ->
+                    if i = 2 then Some (env, idx, dc, l) else None
+                   | read -> Some read)
+                selected_reads
+                other_reads in
+            fold_cell c2 sel2 other2)
            |> Myseq.map (fun (p,r,dl') -> Index (2,p), r, dl') ]
-  and fold_token (m : token_model) reads =
+  and fold_token (m : token_model) selected_reads other_reads =
     match m with
     | Const _ | Regex _ ->
        let encoder_m = token_encoder m in
@@ -1250,8 +1262,8 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
          | _ -> [] in
        let r_best_reads : ([`CommonStr of string | `RE of regex_model | `Expr of expr], _) Mymap.t =
          inter_union_reads
-           (fun (_,data,_) -> token_of_token_data data)
-           (fun (idx,data,_) ->
+           (fun (_,_,data,_) -> token_of_token_data data)
+           (fun (env,idx,data,_) ->
              let s = token_of_token_data data in
              let es = Expr.index_lookup (`String s) idx in
              let rs =
@@ -1270,7 +1282,7 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                  (fun rs e -> (`Expr e, DToken s) :: rs)
                  rs (Expr.exprset_to_seq es) in
              rs)
-           reads in
+           selected_reads in
        let* r_info, best_reads = Mymap.to_seq r_best_reads in
        let* best_reads =
          Myseq.from_result
@@ -1279,25 +1291,36 @@ let row_refinements ~nb_env_paths (lm : row_model) ?(dl_M : dl = 0.) (rsr : rows
                | (read, Result.Ok data') -> Result.Ok (read, data')
                | _ -> Result.Error (Failure "no Alt in tokens"))
               best_reads) in
-       let m' =
+       let* m' =
          match r_info with
-         | `CommonStr s -> Const s
-         | `RE re' -> Regex re'
-         | `Expr e -> Expr e in
+         | `CommonStr s -> Myseq.return (Const s)
+         | `RE re' -> Myseq.return (Regex re')
+         | `Expr e -> (* checking that [e] is undefined on other reads *)
+            if true || List.for_all
+                 (fun other_read ->
+                   List.for_all
+                     (fun (env,_,_,_) ->
+                       match eval_expr_on_env e env with
+                       | Result.Ok `Null -> true
+                       | _ -> false)
+                     other_read)
+                 other_reads
+            then Myseq.return (Expr e)
+            else Myseq.empty in
        let r = RToken m' in
        let encoder_m' = token_encoder m' in
        let dl_m' = dl_token_model ~nb_env_paths m' in
        let dl' =
          dl_M -. dl_m +. dl_m'
          +. !alpha *. Mdl.sum best_reads
-                        (fun ((_,data,dl_D), data') ->
+                        (fun ((_,_,data,dl_D), data') ->
                           dl_D -. encoder_m data +. encoder_m' data') in         
        Myseq.return (ThisToken, r, dl')
     | Expr e -> Myseq.empty
   in
   let* p, r, dl' =
     fold_row lm reads
-    |> Myseq.sort (fun (_,_,dl1) (_,_,dl2) -> dl_compare dl1 dl2)
+    |> Myseq.sort (fun (p1,r1,dl1) (p2,r2,dl2) -> dl_compare dl1 dl2)
     |> Myseq.slice ~limit:!max_refinements in
   let m' = apply_cell_refinement r p lm in
   Myseq.return (p, r, dl', m')
