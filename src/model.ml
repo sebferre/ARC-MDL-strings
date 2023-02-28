@@ -650,57 +650,32 @@ let rec dl_model_env_stats : type a. a model -> int = function
   | Regex _ -> 1
   | Expr _ -> 1
 
-let rec dl_model_stats : type a. a model -> int * int * int (* any, factor, alt *) = function
-  (* counting Any and Factor and Alt inside doc_model *)
-  | Row ld -> assert false
-  | Empty -> 0, 0, 0 (* assert false *)
-  | Nil -> 0, 0, 0
-  | Any -> 1, 0, 0
-  | Factor (l,t,r) ->
-     let na_l, nf_l, no_l = dl_model_stats l in
-     let na_t, nf_t, no_t = dl_model_stats t in
-     let na_r, nf_r, no_r = dl_model_stats r in
-     na_l + na_t + na_r,
-     1 + nf_l + nf_t + nf_r,
-     no_l + no_t + no_r
-  | Alt (c1,c2) ->
-     let na_c1, nf_c1, no_c1 = dl_model_stats c1 in
-     let na_c2, nf_c2, no_c2 = dl_model_stats c2 in
-     na_c1 + na_c2,
-     nf_c1 + nf_c2,
-     no_c1 + no_c2 + 1
-  | Const _ -> 0, 0, 0
-  | Regex _ -> 0, 0, 0
-  | Expr _ -> 0, 0, 0
-
 
 (* TODO: need reflexion, and a generic solution for this problem *)            
-let rec dl_model_aux : type a. nb_env_paths:int -> ?nb_any:int -> ?nb_factor:int -> ?nb_alt:int -> a model -> dl =
-  fun ~nb_env_paths ?(nb_any = 0) ?(nb_factor = 0) ?(nb_alt = 0) m ->
+let rec dl_model_aux : type a. nb_env_paths:int -> a model -> (int * int * int) * dl = (* triple (nb_any, nb_factor, nb_alt *)
+  fun ~nb_env_paths m ->
   match m with
   | Row lm ->
+     (0,0,0), (* TODO: better choice? *)
      Mdl.sum lm (* cell models are independent *)
        (fun m ->
-         let nb_any, nb_factor, nb_alt = dl_model_stats m in
+         let (nb_any, nb_factor, nb_alt), dl = dl_model_aux ~nb_env_paths m in
          Mdl.Code.universal_int_star nb_factor (* encoding total nb of factors/tokens *)
          +. Mdl.Code.universal_int_star nb_any (* encoding total nb of Any's, to favor Nil's *)
          (* +. Mdl.Code.uniform (nb_factor + 2) (* alternate encoding, based on bound for nb_any *) *)
          +. Mdl.Code.universal_int_star nb_alt (* encoding total nb of Alt's *)
-         +. dl_model_aux ~nb_env_paths ~nb_any ~nb_factor ~nb_alt m)
+         +. dl)
   | Empty -> assert false
-  | Nil ->
-     assert (nb_any = 0 && nb_factor = 0 && nb_alt = 0);
-     0.
-  | Any ->
-     assert (nb_any = 1 && nb_factor = 0 && nb_alt = 0);
-     0.
+  | Nil -> (0,0,0), 0.
+  | Any -> (1,0,0), 0.
   | Factor (l,t,r) ->
-     let na_l, nf_l, no_l = dl_model_stats l in
-     let na_t, nf_t, no_t = dl_model_stats t in
-     let na_r, nf_r, no_r = dl_model_stats r in
-     assert (na_l + na_t + na_r = nb_any);
-     assert (1 + nf_l + nf_t + nf_r = nb_factor);
-     assert (no_l + nf_t + no_r = nb_alt);
+     let (na_l, nf_l, no_l), dl_l = dl_model_aux ~nb_env_paths l in
+     let (na_t, nf_t, no_t), dl_t = dl_model_aux ~nb_env_paths t in
+     let (na_r, nf_r, no_r), dl_r = dl_model_aux ~nb_env_paths r in
+     let nb_any = na_l + na_t + na_r in
+     let nb_factor = 1 + nf_l + nf_t + nf_r in
+     let nb_alt = no_l + nf_t + no_r in
+     (nb_any, nb_factor, nb_alt),
      Mdl.Code.usage (float nb_factor /. float (nb_factor + nb_alt)) (* choice between Factor and Alt *)
      +. (* encoding split of remaining Factor's, assuming nf_t = 0 so far *)
        (let k = nb_factor in
@@ -724,15 +699,14 @@ let rec dl_model_aux : type a. nb_env_paths:int -> ?nb_any:int -> ?nb_factor:int
           + 1 in
         assert (k > 0);
         Mdl.Code.uniform k)
-     +. dl_model_aux ~nb_env_paths ~nb_any:na_l ~nb_factor:nf_l ~nb_alt:no_l l
-     +. dl_model_aux ~nb_env_paths ~nb_any:na_t ~nb_factor:nf_t ~nb_alt:no_t t
-     +. dl_model_aux ~nb_env_paths ~nb_any:na_r ~nb_factor:nf_r ~nb_alt:no_r r
+     +. dl_l +. dl_t +. dl_r
   | Alt (c1,c2) ->
-     let na_c1, nf_c1, no_c1 = dl_model_stats c1 in
-     let na_c2, nf_c2, no_c2 = dl_model_stats c2 in
-     assert (na_c1 + na_c2 = nb_any);
-     assert (nf_c1 + nf_c2 = nb_factor);
-     assert (no_c1 + no_c2 + 1 = nb_alt);
+     let (na_c1, nf_c1, no_c1), dl1 = dl_model_aux ~nb_env_paths c1 in
+     let (na_c2, nf_c2, no_c2), dl2 = dl_model_aux ~nb_env_paths c2 in
+     let nb_any = na_c1 + na_c2 in
+     let nb_factor = nf_c1 + nf_c2 in
+     let nb_alt = 1 + no_c1 + no_c2 in
+     (nb_any, nb_factor, nb_alt),
      Mdl.Code.usage (float nb_alt /. float (nb_alt + nb_factor)) (* choice between Factor and Alt *)
      +.  (* one factor left, encoding split of remaining Factor's *)
        (let k = nb_factor + 1 in
@@ -752,16 +726,18 @@ let rec dl_model_aux : type a. nb_env_paths:int -> ?nb_any:int -> ?nb_factor:int
           + 1 in
         assert (k > 0);
         Mdl.Code.uniform k)
-     +. dl_model_aux ~nb_env_paths ~nb_any:na_c1 ~nb_factor:nf_c1 ~nb_alt:no_c1 c1
-     +. dl_model_aux ~nb_env_paths ~nb_any:na_c2 ~nb_factor:nf_c2 ~nb_alt:no_c2 c2
+     +. dl1 +. dl2
   | Const s ->
+     (0,0,0),
      Mdl.Code.usage 0.3
      +. Mdl.Code.universal_int_plus (String.length s)
      +. dl_string_ascii s
   | Regex rm ->
+     (0,0,0),
      Mdl.Code.usage 0.2
      +. Mdl.Code.uniform nb_regex
   | Expr e ->
+     (0,0,0),
      Mdl.Code.usage 0.5
      +. Expr.dl_expr
           (fun p ->
@@ -770,12 +746,12 @@ let rec dl_model_aux : type a. nb_env_paths:int -> ?nb_any:int -> ?nb_factor:int
             Mdl.Code.uniform k)
           e
 
-let rec dl_row_model ~(nb_env_paths : int) (m : row model) : dl =
-  dl_model_aux ~nb_env_paths m
-let rec dl_cell_model ~(nb_env_paths : int) (m : cell model) : dl =
-  dl_model_aux ~nb_env_paths (Row [m]) (* for initializing nb_any, ... *)
-let rec dl_token_model ~(nb_env_paths : int) (m : token model) : dl =
-  dl_model_aux ~nb_env_paths m
+let dl_model ~(nb_env_paths : int) (m : 'a model) : dl =
+  let (nb_any, nb_factor, nb_alt), dl = dl_model_aux ~nb_env_paths m in
+  Mdl.Code.universal_int_star nb_factor (* encoding total nb of factors/tokens *)
+  +. Mdl.Code.universal_int_star nb_any (* encoding total nb of Any's, to favor Nil's *)
+  +. Mdl.Code.universal_int_star nb_alt (* encoding total nb of Alt *)
+  +. dl
 
   
 type 'a encoder = 'a -> dl
@@ -1040,6 +1016,7 @@ let inter_union_reads
          (alt_reads, refs) other_reads in
      refs
 
+
 let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a read list list -> env list list -> (a path * refinement * dl) Myseq.t =
   fun ~nb_env_paths ~dl_M m selected_reads other_reads_env ->
   if selected_reads = [] then Myseq.empty
@@ -1065,7 +1042,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
     | Nil -> Myseq.empty
     | Any ->
        let encoder_m = encoder m in
-       let dl_m = dl_cell_model ~nb_env_paths m in
+       let dl_m = dl_model ~nb_env_paths m in
        let r_best_reads : ([`IsNil | `Token of token model | `CommonStr of string], _) Mymap.t =
          inter_union_reads
            (fun read -> contents_of_data read.data)
@@ -1167,7 +1144,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
             Myseq.return m' in
        let r = RCell (supp,m') in
        let encoder_m' = encoder m' in
-       let dl_m' = dl_cell_model ~nb_env_paths m' in
+       let dl_m' = dl_model ~nb_env_paths m' in
        let dl' =
          dl_M -. dl_m +. dl_m'
          +. !alpha *. Mdl.sum best_reads
@@ -1229,7 +1206,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
            |> Myseq.map (fun (p,r,dl') -> Index (2,p), r, dl') ]
     | Const _ -> (* TODO: factorize code of Any/Const/Regex *)
        let encoder_m = encoder (m : token model) in
-       let dl_m = dl_token_model ~nb_env_paths m in
+       let dl_m = dl_model ~nb_env_paths m in
        let r_best_reads : ([`Expr of expr], (token read * (token data, string) Result.t) list) Mymap.t =
          inter_union_reads
            (fun read -> contents_of_data read.data)
@@ -1266,7 +1243,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
             Expr e in
        let r = RToken m' in
        let encoder_m' = encoder m' in
-       let dl_m' = dl_token_model ~nb_env_paths m' in
+       let dl_m' = dl_model ~nb_env_paths m' in
        let dl' =
          dl_M -. dl_m +. dl_m'
          +. !alpha *. Mdl.sum best_reads
@@ -1275,7 +1252,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
        Myseq.return (This, r, dl')
     | Regex _ ->
        let encoder_m = encoder (m : token model) in
-       let dl_m = dl_token_model ~nb_env_paths m in
+       let dl_m = dl_model ~nb_env_paths m in
        let re'_candidates =
          match m with
          | Regex Content -> [Word; Decimal]
@@ -1332,7 +1309,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
             Expr e in
        let r = RToken m' in
        let encoder_m' = encoder m' in
-       let dl_m' = dl_token_model ~nb_env_paths m' in
+       let dl_m' = dl_model ~nb_env_paths m' in
        let dl' =
          dl_M -. dl_m +. dl_m'
          +. !alpha *. Mdl.sum best_reads
@@ -1343,11 +1320,6 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
      
 let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : (row path * refinement * dl * row model) Myseq.t =
   (* NOTE: dl_M does not matter for ranking because invariant of parsing and refinement *)
-(* REM  let reads = (* replacing env's with expression index's over them *)
-    map_reads
-      (fun (env,data,dl) ->
-        (env, Expr.make_index (bindings env), data, dl))
-      rsr.reads in *)
   let selected_reads = rsr.reads in
   let other_reads_env = [] in
   let* p, r, dl' =
@@ -1387,8 +1359,8 @@ type pairs_reads = (* result of reading a list of pairs of grids *)
 let read_pairs ?(env = row_data0 0) (m : task_model) (pairs : Task.pair list) : pairs_reads result =
   Common.prof "Model.read_pairs" (fun () ->
   (* takes model, input env+docs, output docs *)
-  let dl_mi = dl_row_model ~nb_env_paths:0 m.input_model in    
-  let dl_mo = dl_row_model ~nb_env_paths:(dl_model_env_stats m.input_model) m.output_model in
+  let dl_mi = dl_model ~nb_env_paths:0 m.input_model in    
+  let dl_mo = dl_model ~nb_env_paths:(dl_model_env_stats m.input_model) m.output_model in
   let| inputs_reads_reads =
     pairs
     |> list_map_result
