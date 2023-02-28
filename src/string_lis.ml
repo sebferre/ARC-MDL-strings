@@ -211,12 +211,10 @@ let html_of_cell : cell -> Html.t = function
        (html_of_row_from_string_list lsi)
        (html_of_row_from_string_list lso)
   | Descr (ri,ro) ->
-     let (_, d_i, dli : Model.row Model.read) = ri in
-     let (_, d_o, dlo : Model.row Model.read) = ro in
      html_row_pair
-       (html_of_row_from_data d_i)
-       (html_of_row_from_data d_o)
-     ^ Printf.sprintf "<br/>DL = %.3f = %.3fi + %.3fo" (dli +. dlo) dli dlo
+       (html_of_row_from_data ri.Model.data)
+       (html_of_row_from_data ro.Model.data)
+     ^ Printf.sprintf "<br/>DL = %.3f = %.3fi + %.3fo" (ri.dl +. ro.dl) ri.dl ro.dl
   | Pred (expected_so, l_di_so) ->
      String.concat ""
        (List.map

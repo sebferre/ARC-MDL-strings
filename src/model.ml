@@ -880,8 +880,11 @@ let rec encoder : type a. a model -> a data encoder = function
 
 (* reading *)
 
-(* type 'a read = env * 'a * dl *)
-type 'a read = env * 'a data * dl
+type 'a read =
+  { env : env;
+    index : index;
+    data : 'a data;
+    dl : dl }
 
 let limit_dl (f_dl : 'a -> dl) (l : 'a list) : 'a list =
   match l with
@@ -892,7 +895,7 @@ let limit_dl (f_dl : 'a -> dl) (l : 'a list) : 'a list =
      List.filter (fun x -> f_dl x <= min_dl) l
 
 let read ~(env : env) (m0 : row model) (ls : string list) : row read list result =
-  Common.prof "Model.read_row" (fun () ->
+  Common.prof "Model.read" (fun () ->
   let| m = apply m0 env in (* reducing expressions *)
   let parses =
     let* data, () = parse RowParsing m ls in
@@ -915,8 +918,9 @@ let read ~(env : env) (m0 : row model) (ls : string list) : row read list result
       |> (fun l -> Common.sub_list l 0 !max_nb_reads)
       |> limit_dl (fun (_,_,dl) -> dl)
       |> List.mapi (fun rank (env,data,dl) ->
+             let index = Expr.make_index (bindings env) in
              let dl = dl +. Mdl.Code.universal_int_star rank in (* to penalize later parses, in case of equivalent parses *)
-             (env, data, dl)) in
+             { env;  index; data; dl }) in
     Result.Ok best_parses)
 
 type reads =
@@ -984,10 +988,10 @@ let partition_map_reads (f : 'a -> ('b,'c) Result.t) (selected_reads : 'a list l
 
 let inter_union_reads
     : type a r.
-           (env * index * a data * dl -> string)
-           -> (env * index * a data * dl -> (r * a data) list)
-           -> (env * index * a data * dl) list list
-           -> (r, ((env * index * a data * dl) * (a data, string) Result.t) list) Mymap.t =
+           (a read -> string)
+           -> (a read -> (r * a data) list)
+           -> a read list list
+           -> (r, (a read * (a data, string) Result.t) list) Mymap.t =
   fun to_string f reads ->
 (*      (to_string : 'read -> string)
       (f : 'read -> ('r * 'd) list)
@@ -1036,7 +1040,7 @@ let inter_union_reads
          (alt_reads, refs) other_reads in
      refs
 
-let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env * index * a data * dl) list list -> env list list -> (a path * refinement * dl) Myseq.t =
+let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a read list list -> env list list -> (a path * refinement * dl) Myseq.t =
   fun ~nb_env_paths ~dl_M m selected_reads other_reads_env ->
   if selected_reads = [] then Myseq.empty
   else
@@ -1047,11 +1051,11 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
             (fun i m ->
               let m_reads =
                 map_reads
-                  (fun (env, idx, d, dl) ->
-                    match d with
+                  (fun read ->
+                    match read.data with
                     | DRow ld ->
                        let d_i = try List.nth ld i with _ -> assert false in
-                       (env, idx, d_i, dl)
+                       {read with data = d_i}
                     | _ -> assert false)
                   selected_reads in
               refinements_aux ~nb_env_paths ~dl_M m m_reads other_reads_env
@@ -1064,9 +1068,9 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
        let dl_m = dl_cell_model ~nb_env_paths m in
        let r_best_reads : ([`IsNil | `Token of token model | `CommonStr of string], _) Mymap.t =
          inter_union_reads
-           (fun (_,_,data,_) -> contents_of_data data)
-           (fun (_,_,data,_) ->
-             let s = contents_of_data data in
+           (fun read -> contents_of_data read.data)
+           (fun read ->
+             let s = contents_of_data read.data in
              let rs = (* the nil string *)
                if s = "" then [(`IsNil, DNil)] else [] in
              let rs = (* token models *)
@@ -1167,32 +1171,35 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
        let dl' =
          dl_M -. dl_m +. dl_m'
          +. !alpha *. Mdl.sum best_reads
-                        (fun ((_,_,data,dl_D), data') ->
-                          dl_D -. encoder_m data +. encoder_m' data') in
+                        (fun (read, data') ->
+                          read.dl -. encoder_m read.data +. encoder_m' data') in
        Myseq.return (This, r, dl')
     | Factor (l,t,r) ->
        Myseq.concat
          [ refinements_aux ~nb_env_paths ~dl_M t
              (map_reads
-                (function
-                 | (env, idx, DFactor (_,dt,_), l) -> (env, idx, dt, l)
-                 | _ -> assert false)
+                (fun read ->
+                  match read.data with
+                  | DFactor (_,dt,_) -> {read with data = dt}
+                  | _ -> assert false)
                 selected_reads)
              other_reads_env
            |> Myseq.map (fun (p,r,dl') -> Middle p, r, dl');
            refinements_aux ~nb_env_paths ~dl_M l
              (map_reads
-                (function
-                 | (env, idx, DFactor (dl,_,_), l) -> (env, idx, dl, l)
-                 | _ -> assert false)
+                (fun read ->
+                  match read.data with
+                  | DFactor (dl,_,_) -> {read with data = dl}
+                  | _ -> assert false)
                 selected_reads)
              other_reads_env
            |> Myseq.map (fun (p,r,dl') -> Left p, r, dl');
            refinements_aux ~nb_env_paths ~dl_M r
              (map_reads
-                (function
-                 | (env, idx, DFactor (_,_,dr), l) -> (env, idx, dr, l)
-                 | _ -> assert false)
+                (fun read ->
+                  match read.data with
+                  | DFactor (_,_,dr) -> {read with data = dr}
+                  | _ -> assert false)
                 selected_reads)
              other_reads_env
            |> Myseq.map (fun (p,r,dl') -> Right p, r, dl') ]
@@ -1200,20 +1207,22 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
        Myseq.concat
          [ (let sel1, other1 =
               partition_map_reads
-                (function
-                 | (env, idx, DAlt (i, dc), l) ->
-                    if i = 1 then Result.Ok (env, idx, dc, l) else Result.Error env
-                 | read -> assert false (* Result.Ok read *)) (* for when the Alt has collapsed after evaluation *)
+                (fun read ->
+                  match read.data with
+                  | DAlt (i, dc) ->
+                     if i = 1 then Result.Ok {read with data = dc} else Result.Error read.env
+                  | read -> assert false (* Result.Ok read *)) (* for when the Alt has collapsed after evaluation *)
                 selected_reads
                 other_reads_env in
             refinements_aux ~nb_env_paths ~dl_M c1 sel1 other1)
            |> Myseq.map (fun (p,r,dl') -> Index (1,p), r, dl');
            (let sel2, other2 =
               partition_map_reads
-                (function
-                 | (env, idx, DAlt (i,dc), l) ->
-                    if i = 2 then Result.Ok (env, idx, dc, l) else Result.Error env
-                 | read -> assert false (* Result.Ok read *))
+                (fun read ->
+                  match read.data with
+                  | DAlt (i,dc) ->
+                     if i = 2 then Result.Ok {read with data = dc} else Result.Error read.env
+                  | read -> assert false (* Result.Ok read *))
                 selected_reads
                 other_reads_env in
             refinements_aux ~nb_env_paths ~dl_M c2 sel2 other2)
@@ -1221,14 +1230,14 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
     | Const _ -> (* TODO: factorize code of Any/Const/Regex *)
        let encoder_m = encoder (m : token model) in
        let dl_m = dl_token_model ~nb_env_paths m in
-       let r_best_reads : ([`Expr of expr], ((env * index * token data * dl) * (token data, string) Result.t) list) Mymap.t =
+       let r_best_reads : ([`Expr of expr], (token read * (token data, string) Result.t) list) Mymap.t =
          inter_union_reads
-           (fun (_,_,data,_) -> contents_of_data data)
-           (fun (env,idx,data,_) ->
-             let s = contents_of_data data in
+           (fun read -> contents_of_data read.data)
+           (fun read ->
+             let s = contents_of_data read.data in
              let rs = [] in
              let rs =
-               let es : exprset = Expr.index_lookup (`String s) idx in
+               let es : exprset = Expr.index_lookup (`String s) read.index in
                Myseq.fold_left
                  (fun rs e -> (`Expr e, DToken s) :: rs)
                  rs (Expr.exprset_to_seq es) in
@@ -1261,8 +1270,8 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
        let dl' =
          dl_M -. dl_m +. dl_m'
          +. !alpha *. Mdl.sum best_reads
-                        (fun ((_,_,data,dl_D), data') ->
-                          dl_D -. encoder_m data +. encoder_m' data') in         
+                        (fun (read, data') ->
+                          read.dl -. encoder_m read.data +. encoder_m' data') in         
        Myseq.return (This, r, dl')
     | Regex _ ->
        let encoder_m = encoder (m : token model) in
@@ -1274,11 +1283,11 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
          | Regex Decimal -> [Digits]
          | Regex Separators -> [Spaces]
          | _ -> [] in
-       let r_best_reads : ([`CommonStr of string | `RE of regex_model | `Expr of expr], ((env * index * token data * dl) * (token data, string) Result.t) list) Mymap.t =
+       let r_best_reads : ([`CommonStr of string | `RE of regex_model | `Expr of expr], (token read * (token data, string) Result.t) list) Mymap.t =
          inter_union_reads
-           (fun (_,_,data,_) -> contents_of_data data)
-           (fun (env,idx,data,_) ->
-             let s = contents_of_data data in
+           (fun read -> contents_of_data read.data)
+           (fun read ->
+             let s = contents_of_data read.data in
              let rs = [] in
              let rs =
                if s <> "" && (match m with Regex _ -> true | _ -> false)
@@ -1292,7 +1301,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
                    else rs)
                  rs re'_candidates in
              let rs =
-               let es : exprset = Expr.index_lookup (`String s) idx in
+               let es : exprset = Expr.index_lookup (`String s) read.index in
                Myseq.fold_left
                  (fun rs e -> (`Expr e, DToken s) :: rs)
                  rs (Expr.exprset_to_seq es) in
@@ -1327,20 +1336,22 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> (env
        let dl' =
          dl_M -. dl_m +. dl_m'
          +. !alpha *. Mdl.sum best_reads
-                        (fun ((_,_,data,dl_D), data') ->
-                          dl_D -. encoder_m data +. encoder_m' data') in         
+                        (fun (read, data') ->
+                          read.dl -. encoder_m read.data +. encoder_m' data') in         
        Myseq.return (This, r, dl')
     | Expr e -> Myseq.empty
      
 let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : (row path * refinement * dl * row model) Myseq.t =
   (* NOTE: dl_M does not matter for ranking because invariant of parsing and refinement *)
-  let reads = (* replacing env's with expression index's over them *)
+(* REM  let reads = (* replacing env's with expression index's over them *)
     map_reads
       (fun (env,data,dl) ->
         (env, Expr.make_index (bindings env), data, dl))
-      rsr.reads in
+      rsr.reads in *)
+  let selected_reads = rsr.reads in
+  let other_reads_env = [] in
   let* p, r, dl' =
-    refinements_aux ~nb_env_paths ~dl_M m reads []
+    refinements_aux ~nb_env_paths ~dl_M m selected_reads other_reads_env
     |> Myseq.sort (fun (p1,r1,dl1) (p2,r2,dl2) -> dl_compare dl1 dl2)
     |> Myseq.slice ~limit:!max_refinements in
   let m' = apply_refinement r p m in
@@ -1385,10 +1396,9 @@ let read_pairs ?(env = row_data0 0) (m : task_model) (pairs : Task.pair list) : 
            let| input_reads =
              read ~env m.input_model input in (* no diff allowed during training *)
            let| pair_reads = 
-             let+|+ (envi,ddi,dli as ri) = Result.Ok input_reads in      
-             let+|+ (envo,ddo,dlo as ro) =
-               read ~env:ddi m.output_model output in
-             let dl = dli +. dlo in
+             let+|+ ri = Result.Ok input_reads in      
+             let+|+ ro = read ~env:ri.data m.output_model output in
+             let dl = ri.dl +. ro.dl in
              Result.Ok [(ri,ro,dl)] in
            let pair_reads =
              pair_reads
@@ -1405,7 +1415,7 @@ let dl_model_data (psr : pairs_reads) : dl triple triple = (* QUICK *)
     List.fold_left
       (fun (ldi,ldo) ->
         function
-        | ((_,_,dli),(_,_,dlo),dl)::_ -> (ldi +. dli, ldo +. dlo)
+        | (ri,ro,dl)::_ -> (ldi +. ri.dl, ldo +. ro.dl)
         | _ -> assert false)
       (0.,0.) psr.reads in
   let ldi, ldo = !alpha *. ldi, !alpha *. ldo in
@@ -1446,11 +1456,11 @@ let split_pairs_read (prs : pairs_reads) : reads * reads =
 
 let apply_model ?(env = env0) (m : task_model) (row_i : string list) : ((row data * string list) list, exn) Result.t =
   Common.prof "Model.apply_model" (fun () ->
-  let+|+ _, di, _ =
+  let+|+ read_i =
     read ~env m.input_model row_i in
   let| row_o =
-    write ~env:di m.output_model in
-  Result.Ok [(di, row_o)])
+    write ~env:read_i.data m.output_model in
+  Result.Ok [(read_i.data, row_o)])
 
   
 type task_refinement =
@@ -1560,10 +1570,10 @@ let learn_model
       if verbose then (
         print_endline " ===> first read for first example";
         List.hd (List.hd prs.reads)
-        |> (fun ((_,d_i,dl_i), (_, d_o, dl_o), dl) ->
+        |> (fun (read_i, read_o, dl) ->
           print_endline " --- some read ---";
-          pp_data d_i; print_newline ();
-          pp_data d_o; print_newline ();
+          pp_data read_i.data; print_newline ();
+          pp_data read_o.data; print_newline ();
           Printf.printf "\tdl=%.1f\n" dl);
         print_newline ());
         (*pp_grids_read "### OUT grids_read ###" gsro;*)
