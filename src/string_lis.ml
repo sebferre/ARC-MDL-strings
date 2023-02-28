@@ -21,11 +21,11 @@ type arc_state =
   { name : string; (* task name *)
     task : Task.task; (* task *)
     norm_dl_model_data : Model.pairs_reads -> dl triple triple;
-    refinement : Model.refinement; (* previous refinement *)
-    model : Model.model; (* current model *)
+    refinement : Model.task_refinement; (* previous refinement *)
+    model : Model.task_model; (* current model *)
     prs : Model.pairs_reads; (* pair reads *)
-    dsri : Model.rows_reads; (* input reads *)
-    dsro : Model.rows_reads; (* output reads *)
+    dsri : Model.reads; (* input reads *)
+    dsro : Model.reads; (* output reads *)
     dls : Mdl.bits triple triple; (* DL components *)
     norm_dls : Mdl.bits triple triple; (* normalized DL components *)
     norm_dl : Mdl.bits; (* global normalized DL *)
@@ -40,7 +40,7 @@ type arc_focus = arc_state
                
 type arc_extent = arc_state
 
-let rec state_of_model (name : string) (task : Task.task) norm_dl_model_data (refinement : Model.refinement) (model : Model.model) : (arc_state, exn) Result.t =
+let rec state_of_model (name : string) (task : Task.task) norm_dl_model_data (refinement : Model.task_refinement) (model : Model.task_model) : (arc_state, exn) Result.t =
   let| prs = Model.read_pairs model task.Task.train in
   let dsri, dsro = Model.split_pairs_read prs in
   let dls = Model.dl_model_data prs in
@@ -65,7 +65,7 @@ let task0 =
 
 let initial_focus (name : string) (task : Task.task) : arc_focus =
   let norm_dl_model_data = Model.make_norm_dl_model_data () in
-  match state_of_model name task norm_dl_model_data Model.RInit (Model.init_model task) with
+  match state_of_model name task norm_dl_model_data Model.RInit (Model.init_task_model task) with
   | Result.Ok s -> s
   | Result.Error exn -> raise exn
 
@@ -79,7 +79,7 @@ object
     if focus.suggestions = [] then (
       Jsutils.firebug "Computing suggestions...";
       let _, suggestions = (* selecting up to [refine_degree] compressive refinements, keeping other for information *)
-        Model.model_refinements focus.refinement focus.model focus.prs focus.dsri focus.dsro
+        Model.task_refinements focus.refinement focus.model focus.prs focus.dsri focus.dsro
         |> Myseq.fold_left
              (fun (quota_compressive,suggestions as res) (r,m) ->
                if quota_compressive <= 0
@@ -158,9 +158,9 @@ let xml_of_focus focus =
      [[Syntax.Kwd (Printf.sprintf "Task %s" focus.name)];
       [Syntax.Kwd (Printf.sprintf "DL = %f" focus.norm_dl)];
       [Syntax.Kwd (Printf.sprintf "DL = %.3f = %.3fm + %.3fd = (%.3fmi + %.3fmo) + (%.3fdi + %.3fdo) = %.3fi + %.3fo" md m d mi mo di do_ mdi mdo)];
-      [Syntax.Kwd (Model.string_of_row_model focus.model.input_model)];
+      [Syntax.Kwd (Model.string_of_model focus.model.input_model)];
       [Syntax.Kwd " ➜ "];
-      [Syntax.Kwd (Model.string_of_row_model focus.model.output_model)]]]
+      [Syntax.Kwd (Model.string_of_model focus.model.output_model)]]]
   
 let html_of_word (w : arc_word) : Html.t = assert false
 
@@ -186,14 +186,14 @@ let html_of_suggestion ~input_dico = function
   | RefinedState (s,compressive) ->
      Html.span ~classe:(if compressive then "compressive" else "non-compressive")
        (Printf.sprintf "(%f" s.norm_dl
-        ^ Model.string_of_refinement s.refinement)
+        ^ Model.string_of_task_refinement s.refinement)
 
 let html_of_row_from_string_list (ls : string list) =
   String.concat "</br>"
     (List.map (Xprint.to_string Model.xp_string) ls)
 
 let html_of_row_from_data data =
-  Model.string_of_row_data data
+  Model.string_of_data data
 
 let html_row_pair html_i html_o =
   html_i ^ "<br/> ➜ <br/>" ^ html_o
@@ -201,8 +201,8 @@ let html_row_pair html_i html_o =
 type col = ColExample | ColDescr | ColPred
 type cell =
   | Example of string list * string list
-  | Descr of Model.row_read * Model.row_read
-  | Pred of string list * (Model.row_data * string list) list (* expected grid, all preds *)
+  | Descr of Model.row Model.read * Model.row Model.read
+  | Pred of string list * (Model.row Model.data * string list) list (* expected grid, all preds *)
   | Error of string
                                     
 let html_of_cell : cell -> Html.t = function
@@ -211,8 +211,8 @@ let html_of_cell : cell -> Html.t = function
        (html_of_row_from_string_list lsi)
        (html_of_row_from_string_list lso)
   | Descr (ri,ro) ->
-     let (_, d_i, dli : Model.row_read) = ri in
-     let (_, d_o, dlo : Model.row_read) = ro in
+     let (_, d_i, dli : Model.row Model.read) = ri in
+     let (_, d_o, dlo : Model.row Model.read) = ro in
      html_row_pair
        (html_of_row_from_data d_i)
        (html_of_row_from_data d_o)

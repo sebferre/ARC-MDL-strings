@@ -3,7 +3,7 @@ OBJ=bintree.cmo common.cmo xprint.cmo iterator.cmo myseq.cmo mymap.cmo mdl.cmo f
 SRC=utilities.cmo range.cmo task.cmo expr.cmo model.cmo
 SRC_FABLIS=focus.cmo syntax.cmo lis.cmo jsutils.cmo webapp.cmo html.cmo widget_focus.cmo widget_suggestions.cmo widget_table.cmo widget_commandline.cmo
 
-FLAGS= -I ../../lib -package unix,str,num,yojson,ppx_deriving_yojson
+FLAGS= -principal -I ../../lib -package unix,str,num,yojson,ppx_deriving_yojson
 FLAGS_FABLIS = -I ../../fablis/core -I ../../fablis/core/webapp
 #JSOO_FLAGS = -pretty -no-inline -debug-info # for dev
 JSOO_FLAGS = --opt 3 # for prod
