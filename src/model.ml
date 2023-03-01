@@ -1277,11 +1277,13 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                rs (Expr.exprset_to_seq es) in
            rs)
        (fun r_info ~alt best_reads ->
-         let m' =
+         let* m' =
            match r_info with
-           | `CommonStr s -> Const s
-           | `RE re' -> Regex re'
-           | `Expr e -> Expr e in
+           | `CommonStr s ->
+              if alt then Myseq.empty (* to avoid rote learning, enumerating occurring values *)
+              else Myseq.return (Const s)
+           | `RE re' -> Myseq.return (Regex re')
+           | `Expr e -> Myseq.return (Expr e) in
          let m' = if alt then Alt (m',m) else m' in
          let r = RToken m' in
          Myseq.return (r,m'))
