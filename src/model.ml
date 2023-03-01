@@ -444,10 +444,17 @@ let re_of_regex = function
 let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize *)
   Str.string_match re s 0
   && Str.match_end () = String.length s
-               
-let regexp_match_slices (re : Str.regexp) (s : string) (len : int) (start : int) : (int * int) Myseq.t =
+
+type token_pattern = [`String of string | `Regex_model of regex_model]
+  
+let match_slices (pat : token_pattern) (s : string) : (string * string * string) Myseq.t =
   assert (s <> "");
   (* beware of the re matches "" *)
+  let re, is_decimal =
+    match pat with
+    | `String s -> Str.regexp_string s, false
+    | `Regex_model rm -> re_of_regex rm, (rm=Decimal) in
+  let len = String.length s in
   let rec aux start =
     if start >= len
     then Myseq.empty
@@ -457,26 +464,30 @@ let regexp_match_slices (re : Str.regexp) (s : string) (len : int) (start : int)
         let j = Str.match_end () in
         if i = j (* not keeping nil matches *)
         then aux (i+1)
-        else Myseq.cons (i,j) (aux j)
+        else
+          let sl = String.sub s 0 i in
+          let st = String.sub s i (j-i) in
+          let sr = String.sub s j (len-j) in
+          if is_decimal
+             && (sr <> "" && sr.[0]='.'
+                 || sl <> "" && sl.[String.length sl - 1]='.')
+          then aux j (* ignoring false decimal values, with dot before or after *)
+          else Myseq.cons (sl,st,sr) (aux j)
       with Not_found ->
         Myseq.empty
   in
-  aux start
+  aux 0
 
-let token_parse (re : Str.regexp) (s : string) : (token data * (string * string)) Myseq.t =
+let token_parse (pat : token_pattern) (s : string) : (token data * (string * string)) Myseq.t =
   assert (s <> "");
-  let n = String.length s in
-  let* i, j = regexp_match_slices re s n 0 in
-  let sl = String.sub s 0 i in
-  let st = String.sub s i (j-i) in
-  let sr = String.sub s j (n-j) in
+  let* sl, st, sr = match_slices pat s in
   let dt = DToken st in
   Myseq.return (dt,(sl,sr))
 let token_parse, reset_token_parse =
   let f, reset =
     Common.memoize ~size:1003
-      (fun (re,s) -> Myseq.memoize (token_parse re s)) in
-  let f = fun m s -> f (m,s) in
+      (fun (pat,s) -> Myseq.memoize (token_parse pat s)) in
+  let f = fun pat s -> f (pat,s) in
   f, reset
 
 type (_,_,_) parsing =
@@ -520,8 +531,8 @@ let rec parse : type a c b. (a,c,b) parsing -> a model -> (c, a data * b) parseu
      else
        let* dc1, b1 = seq1 in
        Myseq.return (DAlt (1,dc1), b1)
-  | TokenParsing, Const cst, s -> token_parse (Str.regexp_string cst) s
-  | TokenParsing, Regex rm, s -> token_parse (re_of_regex rm) s
+  | TokenParsing, Const cst, s -> token_parse (`String cst) s
+  | TokenParsing, Regex rm, s -> token_parse (`Regex_model rm) s
   | _, Expr _, _ -> assert false
 
 
