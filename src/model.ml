@@ -49,7 +49,7 @@ type regex_model =
 let nb_regex = 7
   
 let re_content = Str.regexp "[A-Za-z_0-9#$%&*+/<=>@\\^|~-]+"
-let re_word = Str.regexp "[A-Za-z_0-9]+"
+let re_word = Str.regexp "[A-Za-z_][A-Za-z_0-9]*"
 let re_letters = Str.regexp "[A-Za-z]+"
 let re_decimal = Str.regexp "[0-9]+\\([.][0-9]+\\)?"
 let re_digits = Str.regexp "[0-9]+"
