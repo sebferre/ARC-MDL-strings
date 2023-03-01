@@ -22,6 +22,7 @@ type arc_state =
     task : Task.task; (* task *)
     norm_dl_model_data : Model.pairs_reads -> dl triple triple;
     refinement : Model.task_refinement; (* previous refinement *)
+    refinement_support : int;
     model : Model.task_model; (* current model *)
     prs : Model.pairs_reads; (* pair reads *)
     dsri : Model.reads; (* input reads *)
@@ -49,6 +50,7 @@ let rec state_of_model (name : string) (task : Task.task) norm_dl_model_data (re
     { name; task;
       norm_dl_model_data;
       refinement;
+      refinement_support = Model.task_refinement_support refinement;
       model;
       prs; dsri; dsro;
       dls;
@@ -92,11 +94,13 @@ object
                     else (quota_compressive, state::suggestions)
                  | Result.Error _ -> res)
              (!Model.max_refinements, []) in
-      let suggestions = (* sorting in increasing DL *)
+      let suggestions =
         suggestions
         |> List.rev (* to preserve ordering from sequence *) 
-        |> List.sort
-             (fun s1 s2 -> Stdlib.compare s1.norm_dl s2.norm_dl) in
+        |> List.sort (* sorting by decreasing support, then increasing DL *)
+             (fun s1 s2 -> Stdlib.compare
+                             (s2.refinement_support, s1.norm_dl)
+                             (s1.refinement_support, s2.norm_dl)) in
       let suggestions =
         InputTask (new Focus.input (name0,task0))
         :: ResetTask

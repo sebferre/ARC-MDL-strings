@@ -915,16 +915,16 @@ let write ~(env : env) (m : row model) : (string list, exn) Result.t = Common.pr
 (* refinements *)
 
 type refinement =
-  | RCell of int (* support *) * cell model (* cell specialization *)
-  | RToken of int (* support *) * token model (* token specialization *)
+  | RCell of cell model (* cell specialization *)
+  | RToken of token model (* token specialization *)
 
 let xp_support (print : Xprint.t) (supp : int) =
   print#string " ("; print#int supp; print#string ")"
 
 let xp_refinement (print : Xprint.t) = function
-  | RCell (supp,Nil) -> print#string "<span class=\"model-nil\">ε</span>"; xp_support print supp
-  | RCell (supp,cell) -> xp_model ~prio_ctx:2 print cell; xp_support print supp
-  | RToken (supp,tok) -> xp_model ~prio_ctx:2 print tok; xp_support print supp
+  | RCell Nil -> print#string "<span class=\"model-nil\">ε</span>"
+  | RCell cell -> xp_model ~prio_ctx:2 print cell
+  | RToken tok -> xp_model ~prio_ctx:2 print tok
 let pp_refinement = Xprint.to_stdout xp_refinement
 
 let rec apply_refinement : type a. refinement -> a path -> a model -> a model =
@@ -933,14 +933,14 @@ let rec apply_refinement : type a. refinement -> a path -> a model -> a model =
   | Col (i,p1), Row lm, _ ->
      (try Row (list_update (apply_refinement rf p1) i lm)
       with Not_found -> assert false)
-  | This, Any, RCell (_,cell) -> cell
+  | This, Any, RCell cell -> cell
   | Left p1, Factor (l,t,r), _ -> Factor (apply_refinement rf p1 l, t, r)
   | Middle p1, Factor (l, t, r), _ -> Factor (l, apply_refinement rf p1 t, r)
   | Right p1, Factor (l, t, r), _ -> Factor (l, t, apply_refinement rf p1 r)
   | Index (1,p1), Alt (c1, c2), _ -> Alt (apply_refinement rf p1 c1, c2)
   | Index (2,p1), Alt (c1, c2), _ -> Alt (c1, apply_refinement rf p1 c2)
-  | This, Const _, RToken (_,tok) -> tok
-  | This, Regex _, RToken (_,tok) -> tok
+  | This, Const _, RToken tok -> tok
+  | This, Regex _, RToken tok -> tok
   | _ -> assert false
 
 
@@ -1018,8 +1018,8 @@ let local_refinements
                 -> a read list list (* local data with read information *)
                 -> (a read -> a data) (* alternative data when a refinement does not apply *)
                 -> (a read -> (r * a data) list) (* refinement information with related new local data *)
-                -> (r -> alt:bool -> supp:int -> (a read * a data) list -> (refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
-                -> (a path * refinement * dl) Myseq.t (* result: a sequence of path-wise refinements with estimate DL *)
+                -> (r -> alt:bool -> (a read * a data) list -> (refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
+                -> (a path * refinement * int * dl) Myseq.t (* result: a sequence of path-wise refinements with estimate DL *)
   =
   fun ~nb_env_paths ~dl_M
       m selected_reads
@@ -1052,7 +1052,7 @@ let local_refinements
                      | Result.Error d -> DAlt (2, d) in
                    read, data')
                  best_reads in
-  let* r, m' = make_r_m' r_info ~alt ~supp best_reads in
+  let* r, m' = make_r_m' r_info ~alt best_reads in
   let encoder_m' = encoder m' in
   let dl_m' = dl_model ~nb_env_paths m' in
   let dl' =
@@ -1060,10 +1060,10 @@ let local_refinements
     +. !alpha *. Mdl.sum best_reads
                    (fun (read, data') ->
                      read.dl -. encoder_m read.data +. encoder_m' data') in
-  Myseq.return (This, r, dl')     
+  Myseq.return (This, r, supp, dl')     
 
 
-let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a read list list -> env list list -> (a path * refinement * dl) Myseq.t =
+let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a read list list -> env list list -> (a path * refinement * int (* support *) * dl) Myseq.t =
   fun ~nb_env_paths ~dl_M m selected_reads other_reads_env ->
   if selected_reads = [] then Myseq.empty
   else
@@ -1082,7 +1082,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                     | _ -> assert false)
                   selected_reads in
               refinements_aux ~nb_env_paths ~dl_M m m_reads other_reads_env
-              |> Myseq.map (fun (p,r,dl') -> (Col (i,p), r, dl')))
+              |> Myseq.map (fun (p,r,supp,dl') -> (Col (i,p), r, supp, dl')))
             lm)
     | Empty -> Myseq.empty
     | Nil -> Myseq.empty
@@ -1121,7 +1121,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
              else rs in
            (* no const string to avoid unstructured constant strings like ' 4/11', must be instance of a regexp *)
            rs)
-      (fun r_info ~alt ~supp best_reads ->
+      (fun r_info ~alt best_reads ->
         let* m' =
           match r_info with
           | `IsNil ->
@@ -1150,7 +1150,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
              let m' = Factor (l, tm', r) in
              let m'= if alt then Alt (m', c2) else m' in
              Myseq.return m' in
-        let r = RCell (supp,m') in
+        let r = RCell m' in
         Myseq.return (r,m'))
 
     | Factor (l,t,r) ->
@@ -1163,7 +1163,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                   | _ -> assert false)
                 selected_reads)
              other_reads_env
-           |> Myseq.map (fun (p,r,dl') -> Middle p, r, dl');
+           |> Myseq.map (fun (p,r,supp,dl') -> Middle p, r, supp, dl');
            refinements_aux ~nb_env_paths ~dl_M l
              (map_reads
                 (fun read ->
@@ -1172,7 +1172,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                   | _ -> assert false)
                 selected_reads)
              other_reads_env
-           |> Myseq.map (fun (p,r,dl') -> Left p, r, dl');
+           |> Myseq.map (fun (p,r,supp,dl') -> Left p, r, supp, dl');
            refinements_aux ~nb_env_paths ~dl_M r
              (map_reads
                 (fun read ->
@@ -1181,7 +1181,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                   | _ -> assert false)
                 selected_reads)
              other_reads_env
-           |> Myseq.map (fun (p,r,dl') -> Right p, r, dl') ]
+           |> Myseq.map (fun (p,r,supp,dl') -> Right p, r, supp, dl') ]
       
     | Alt (c1,c2) ->
        Myseq.concat
@@ -1191,22 +1191,22 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                   match read.data with
                   | DAlt (i, dc) ->
                      if i = 1 then Result.Ok {read with data = dc} else Result.Error read.env
-                  | read -> assert false (* Result.Ok read *)) (* for when the Alt has collapsed after evaluation *)
+                  | _ -> assert false)
                 selected_reads
                 other_reads_env in
             refinements_aux ~nb_env_paths ~dl_M c1 sel1 other1)
-           |> Myseq.map (fun (p,r,dl') -> Index (1,p), r, dl');
+           |> Myseq.map (fun (p,r,supp,dl') -> Index (1,p), r, supp, dl');
            (let sel2, other2 =
               partition_map_reads
                 (fun read ->
                   match read.data with
                   | DAlt (i,dc) ->
                      if i = 2 then Result.Ok {read with data = dc} else Result.Error read.env
-                  | read -> assert false (* Result.Ok read *))
+                  | _ -> assert false)
                 selected_reads
                 other_reads_env in
             refinements_aux ~nb_env_paths ~dl_M c2 sel2 other2)
-           |> Myseq.map (fun (p,r,dl') -> Index (2,p), r, dl') ]
+           |> Myseq.map (fun (p,r,supp,dl') -> Index (2,p), r, supp, dl') ]
       
     | Const _ ->
        local_refinements ~nb_env_paths ~dl_M m selected_reads
@@ -1220,12 +1220,12 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                (fun rs e -> (`Expr e, DToken s) :: rs)
                [] (Expr.exprset_to_seq es) in
            rs)
-         (fun r_info ~alt ~supp best_reads ->
+         (fun r_info ~alt best_reads ->
            let m' =
              match r_info with
              | `Expr e -> Expr e in
            let m' = if alt then Alt (m',m) else m' in
-           let r = RToken (supp,m') in
+           let r = RToken m' in
            Myseq.return (r,m'))
     | Regex rm ->
        let rm'_candidates =
@@ -1258,27 +1258,29 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                (fun rs e -> (`Expr e, DToken s) :: rs)
                rs (Expr.exprset_to_seq es) in
            rs)
-       (fun r_info ~alt ~supp best_reads ->
+       (fun r_info ~alt best_reads ->
          let m' =
            match r_info with
            | `CommonStr s -> Const s
            | `RE re' -> Regex re'
            | `Expr e -> Expr e in
          let m' = if alt then Alt (m',m) else m' in
-         let r = RToken (supp,m') in
+         let r = RToken m' in
          Myseq.return (r,m'))
     | Expr e -> Myseq.empty
      
-let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : (row path * refinement * dl * row model) Myseq.t =
+let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : (row path * refinement * int (* support *) * dl * row model) Myseq.t =
   (* NOTE: dl_M does not matter for ranking because invariant of parsing and refinement *)
   let selected_reads = rsr.reads in
   let other_reads_env = [] in
-  let* p, r, dl' =
+  let* p, r, supp, dl' =
     refinements_aux ~nb_env_paths ~dl_M m selected_reads other_reads_env
-    |> Myseq.sort (fun (p1,r1,dl1) (p2,r2,dl2) -> dl_compare dl1 dl2)
+    |> Myseq.sort (fun (p1,r1,supp1,dl1) (p2,r2,supp2,dl2) ->
+           if supp1 = supp2 then dl_compare dl1 dl2
+           else Stdlib.compare supp2 supp1) (* by decreasing support first *)
     |> Myseq.slice ~limit:!max_refinements in
   let m' = apply_refinement r p m in
-  Myseq.return (p, r, dl', m')
+  Myseq.return (p, r, supp, dl', m')
 
 
 (* examples  / pairs *)
@@ -1388,36 +1390,42 @@ let apply_model ?(env = env0) (m : task_model) (row_i : string list) : ((row dat
   
 type task_refinement =
   | RInit
-  | Rinput of row path * refinement * dl (* estimated result DL *)
-  | Routput of row path * refinement * dl (* estimated result DL *)
+  | Rinput of row path * refinement * int (* support *) * dl (* estimated result DL *)
+  | Routput of row path * refinement * int (* support *) * dl (* estimated result DL *)
+
+let task_refinement_support = function
+  | RInit -> (-1)
+  | Rinput (_,_,supp,_) -> supp
+  | Routput (_,_,supp,_) -> supp             
 
 let rec xp_task_refinement (print : Xprint.t) = function
   | RInit -> print#string "init"
-  | Rinput (p,ri,dl') -> xp_task_refinement_aux print " In." p ri dl' "i"
-  | Routput (p,ro, dl') -> xp_task_refinement_aux print " Out." p ro dl' "o"
-and xp_task_refinement_aux print in_out p r dl' i_o =
+  | Rinput (p,ri,supp,dl') -> xp_task_refinement_aux print " In." p ri supp dl' "i"
+  | Routput (p,ro,supp,dl') -> xp_task_refinement_aux print " Out." p ro supp dl' "o"
+and xp_task_refinement_aux print in_out p r supp dl' i_o =
   print#string (Printf.sprintf " / ~%.3f%s)  " dl' i_o);
   print#string in_out;
   xp_row_path print p;
   print#string " ← ";
-  xp_refinement print r
+  xp_refinement print r;
+  xp_support print supp
 let pp_task_refinement = Xprint.to_stdout xp_task_refinement
 let string_of_task_refinement = Xprint.to_string xp_task_refinement
 
 let apply_task_refinement (r : task_refinement) (m : task_model) : (task_refinement * task_model) result =
   match r with
   | RInit -> Result.Error (Failure "apply_refinement")
-  | Rinput (p,ri,dl') ->
+  | Rinput (p,ri,supp,dl') ->
      Result.Ok (r, {m with input_model = apply_refinement ri p m.input_model})
-  | Routput (p,ro,dl') ->
+  | Routput (p,ro,supp,dl') ->
      Result.Ok (r, {m with output_model = apply_refinement ro p m.output_model})
 
 let task_refinements (last_r : task_refinement) (m : task_model) (prs : pairs_reads) (dsri : reads) (dsro : reads) : (task_refinement * task_model) Myseq.t =
   Myseq.concat (* TODO: rather order by estimated dl *)
-    [ (let* p, ri, dli', mi = refinements ~nb_env_paths:0 ~dl_M:prs.dl_mi m.input_model dsri in
-       Myseq.return (Rinput (p,ri,dli'), {m with input_model = mi}));
-      (let* p, ro, dlo', mo = refinements ~nb_env_paths:(dl_model_env_stats m.input_model) ~dl_M:prs.dl_mo m.output_model dsro in
-       Myseq.return (Routput (p,ro,dlo'), {m with output_model = mo})) ]
+    [ (let* p, ri, suppi, dli', mi = refinements ~nb_env_paths:0 ~dl_M:prs.dl_mi m.input_model dsri in
+       Myseq.return (Rinput (p,ri,suppi,dli'), {m with input_model = mi}));
+      (let* p, ro, suppo, dlo', mo = refinements ~nb_env_paths:(dl_model_env_stats m.input_model) ~dl_M:prs.dl_mo m.output_model dsro in
+       Myseq.return (Routput (p,ro,suppo,dlo'), {m with output_model = mo})) ]
 
 
 (* learning *)
