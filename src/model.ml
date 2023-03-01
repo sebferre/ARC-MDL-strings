@@ -48,6 +48,14 @@ type regex_model =
   | Spaces (* [ \n\t\r\f]+ *)
 let nb_regex = 7
   
+let re_content = Str.regexp "[A-Za-z_0-9#$%&*+/<=>@\\^|~-]+"
+let re_word = Str.regexp "[A-Za-z_0-9]+"
+let re_letters = Str.regexp "[A-Za-z]+"
+let re_decimal = Str.regexp "[0-9]+\\([.][0-9]+\\)?"
+let re_digits = Str.regexp "[0-9]+"
+let re_separators = Str.regexp "[] \n\t\r!,.:;?\"'`()[{}]+"
+let re_spaces = Str.regexp "[ \n\t\r]+"
+
 let special_consts =
   [ (* operators *)
     "#"; "$"; "%"; "&"; "*"; "+"; "-"; "/"; "<"; "="; ">"; "@"; "\\"; "^"; "|"; "~";
@@ -70,7 +78,8 @@ type _ model =
   | Expr : expr -> token model
 
 let row_model0 (row_size : int) : row model = Row (List.init row_size (fun _ -> Any))
-
+let env_model0 = row_model0 0
+               
 type _ data =
   | DRow : cell data list -> row data
   | DNil : cell data
@@ -291,30 +300,38 @@ let rec find : type a. a path -> a data -> Expr.value result =
 type bindings = (var * Expr.value) list
 let bindings0 = []
 
-let rec bindings_aux : type a. a ctx -> a data -> bindings -> bindings =
-  fun ctx d acc ->
-  match d with
-  | DRow ld ->
+let rec bindings_aux : type a. a ctx -> a model -> a data -> bindings -> bindings =
+  fun ctx m d acc ->
+  match m, d with
+  | Expr _, _ -> acc (* exprs in output only *)
+  | Row lm, DRow ld ->
+     assert (List.length lm = List.length ld);
      let _, acc =
-       List.fold_left
-         (fun (i,acc) d ->
-           i+1, bindings_aux (fun p -> ctx (Col (i,p))) d acc)
-         (0,acc) ld in
+       List.fold_left2
+         (fun (i,acc) m d ->
+           i+1, bindings_aux (fun p -> ctx (Col (i,p))) m d acc)
+         (0,acc) lm ld in
      acc
-  | DNil -> acc
-  | DAny _ -> acc
-  | DFactor (l,t,r) ->
-     let acc = bindings_aux (fun p -> ctx (Right p)) r acc in
-     let acc = bindings_aux (fun p -> ctx (Left p)) l acc in
-     let acc = bindings_aux (fun p -> ctx (Middle p)) t acc in
+  | Nil, DNil -> acc
+  | Any, DAny _ -> acc
+  | Factor (l,t,r), DFactor (dl,dt,dr) ->
+     let acc = bindings_aux (fun p -> ctx (Right p)) r dr acc in
+     let acc = bindings_aux (fun p -> ctx (Left p)) l dl acc in
+     let acc = bindings_aux (fun p -> ctx (Middle p)) t dt acc in
      acc
-  | DAlt (i,c) ->
-     let acc = bindings_aux (fun p -> ctx (Index (i,p))) c acc in
+  | Alt (c1,c2), DAlt (i,dc) ->
+     let c = if i = 1 then c1 else c2 in
+     let acc = bindings_aux (fun p -> ctx (Index (i,p))) c dc acc in
      acc
-  | DToken s -> (ctx This, `String s) :: acc
+  | _, DToken s ->
+     if List.mem s special_consts
+        || List.exists (fun re -> regexp_match_full re s) [re_separators; re_spaces]
+     then acc
+     else (ctx This, `String s) :: acc
+  | _ -> assert false
 
-let bindings (drow : row data) : bindings =
-  bindings_aux ctx0 drow []
+let bindings (row : row model) (drow : row data) : bindings =
+  bindings_aux ctx0 row drow []
 
 let eval_expr_on_env e env =
   Expr.eval (fun p -> find p env) e
@@ -424,14 +441,6 @@ let chars_of_regex = function
   | Separators -> chars_separators
   | Spaces -> chars_spaces
   
-let re_content = Str.regexp "[A-Za-z_0-9#$%&*+/<=>@\\^|~-]+"
-let re_word = Str.regexp "[A-Za-z_0-9]+"
-let re_letters = Str.regexp "[A-Za-z]+"
-let re_decimal = Str.regexp "[0-9]+\\([.][0-9]+\\)?"
-let re_digits = Str.regexp "[0-9]+"
-let re_separators = Str.regexp "[] \n\t\r!,.:;?\"'`()[{}]+"
-let re_spaces = Str.regexp "[ \n\t\r]+"
-
 let re_of_regex = function
   | Content -> re_content
   | Word -> re_word
@@ -440,10 +449,6 @@ let re_of_regex = function
   | Digits -> re_digits
   | Separators -> re_separators
   | Spaces -> re_spaces
-
-let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize *)
-  Str.string_match re s 0
-  && Str.match_end () = String.length s
 
 type token_pattern = [`String of string | `Regex_model of regex_model]
   
@@ -658,8 +663,9 @@ let rec dl_model_env_stats : type a. a model -> int = function
      dl_model_env_stats c1
      + dl_model_env_stats c2
   | Const _ -> 1
-  | Regex _ -> 1
-  | Expr _ -> 1
+  | Regex (Content | Word | Letters | Decimal | Digits) -> 1 (* proper text content *)
+  | Regex (Separators | Spaces) -> 0 (* not proper content *)
+  | Expr _ -> 0 (* exprs in output only *)
 
 
 (* TODO: need reflexion, and a generic solution for this problem *)            
@@ -881,7 +887,8 @@ let limit_dl (f_dl : 'a -> dl) (l : 'a list) : 'a list =
      let min_dl = !max_parse_dl_factor *. dl0 in
      List.filter (fun x -> f_dl x <= min_dl) l
 
-let read ~(env : env) (m0 : row model) (ls : string list) : row read list result =
+let read ~(env_model : row model) ~(env : env)
+      (m0 : row model) (ls : string list) : row read list result =
   Common.prof "Model.read" (fun () ->
   let| m = apply m0 env in (* reducing expressions *)
   let parses =
@@ -905,7 +912,7 @@ let read ~(env : env) (m0 : row model) (ls : string list) : row read list result
       |> (fun l -> Common.sub_list l 0 !max_nb_reads)
       |> limit_dl (fun (_,_,dl) -> dl)
       |> List.mapi (fun rank (env,data,dl) ->
-             let index = Expr.make_index (bindings env) in
+             let index = Expr.make_index (bindings env_model env) in
              let dl = dl +. Mdl.Code.universal_int_star rank in (* to penalize later parses, in case of equivalent parses *)
              { env;  index; data; dl }) in
     Result.Ok best_parses)
@@ -1320,7 +1327,7 @@ type pairs_reads = (* result of reading a list of pairs of grids *)
     reads : (row read * row read * dl) list list; (* outer list over examples, inner list over parses, sorted in increasing DL *)
   }
 
-let read_pairs ?(env = row_data0 0) (m : task_model) (pairs : Task.pair list) : pairs_reads result =
+let read_pairs (m : task_model) (pairs : Task.pair list) : pairs_reads result =
   Common.prof "Model.read_pairs" (fun () ->
   (* takes model, input env+docs, output docs *)
   let dl_mi = dl_model ~nb_env_paths:0 m.input_model in    
@@ -1330,10 +1337,10 @@ let read_pairs ?(env = row_data0 0) (m : task_model) (pairs : Task.pair list) : 
     |> list_map_result
          (fun {input; output} ->
            let| input_reads =
-             read ~env m.input_model input in (* no diff allowed during training *)
+             read ~env_model:env_model0 ~env:env0 m.input_model input in (* no diff allowed during training *)
            let| pair_reads = 
              let+|+ ri = Result.Ok input_reads in      
-             let+|+ ro = read ~env:ri.data m.output_model output in
+             let+|+ ro = read ~env_model:m.input_model ~env:ri.data m.output_model output in
              let dl = ri.dl +. ro.dl in
              Result.Ok [(ri,ro,dl)] in
            let pair_reads =
@@ -1390,10 +1397,10 @@ let split_pairs_read (prs : pairs_reads) : reads * reads =
   dsri, dsro
 
 
-let apply_model ?(env = env0) (m : task_model) (row_i : string list) : ((row data * string list) list, exn) Result.t =
+let apply_model (m : task_model) (row_i : string list) : ((row data * string list) list, exn) Result.t =
   Common.prof "Model.apply_model" (fun () ->
   let+|+ read_i =
-    read ~env m.input_model row_i in
+    read ~env_model:env_model0 ~env:env0 m.input_model row_i in
   let| row_o =
     write ~env:read_i.data m.output_model in
   Result.Ok [(read_i.data, row_o)])

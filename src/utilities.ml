@@ -92,3 +92,10 @@ let dl_compare (dl1 : float) (dl2 : float) =
   if dl1 < dl2 then -1
   else if dl1 = dl2 then 0
   else 1 [@@inline]
+
+(* regex *)
+  
+let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize *)
+  Str.string_match re s 0
+  && Str.match_end () = String.length s
+
