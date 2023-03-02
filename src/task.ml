@@ -42,9 +42,46 @@ and string_list_of_json : Yojson.Safe.t -> string list = function
 and string_of_json : Yojson.Safe.t -> string = function
   | `String s -> s
   | _ -> invalid_arg "Invalid JSON document"
+
+let task_of_csv (ch_csv : Csv.in_channel) : task =
+  (* assuming no header *)
+  (* assuming the last column is the output *)
+  (* assuming the rows with empty last column to be test instances *)
+  (* TODO: find a way to get more information from CSV files *)
+  let train, test =
+    Csv.fold_right
+      ~f:(fun line (train,test) ->
+        match List.rev line with
+        | [] -> train, test (* empty line *)
+        | y::rev_xs ->
+           let example = { input = List.rev rev_xs; output = [y] } in
+           if y = ""
+           then train, example::test
+           else example::train, test)
+      ch_csv ([],[]) in
+  Csv.close_in ch_csv;
+  { train; test }
+
+let from_filename_contents (filename : string) (contents : string) : task =
+  if Filename.check_suffix filename ".json" then
+    let json = Yojson.Safe.from_string contents in
+    task_of_json json
+  else if Filename.check_suffix filename ".csv" then
+    let ch_csv = Csv.of_string contents in
+    task_of_csv ch_csv
+  else failwith "Unexpected task file format"
        
 let from_file (filename : string) : task =
-  let json = Yojson.Safe.from_file filename in
-  let task = task_of_json json in
-  task
+  if Filename.check_suffix filename ".json" then
+    let json = Yojson.Safe.from_file filename in
+    task_of_json json
+  else if Filename.check_suffix filename ".csv" then
+    (try
+       let ch = Stdlib.open_in filename in
+       let ch_csv = Csv.of_channel ch in
+       task_of_csv ch_csv
+     with exn ->
+       print_endline (Printexc.to_string exn);
+       failwith "The file could not be open")
+  else failwith "Unexpected task file format"
 

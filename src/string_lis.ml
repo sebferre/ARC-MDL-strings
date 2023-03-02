@@ -172,11 +172,10 @@ let html_info_of_input (input : arc_input) : Html.input_info =
   match input with
   | `Task input ->
      Html.fileElt_info
-       (Some ".json")
+       (Some ".json, .csv")
        (fun (fname,contents) k ->
          let task_name = Filename.chop_extension (Filename.basename fname) in
-         let json = Yojson.Safe.from_string contents in
-         let task = Task.task_of_json json in
+         let task = Task.from_filename_contents fname contents in
          input#set (task_name, task);
          k ())
                                          
