@@ -24,7 +24,7 @@ type value =
 (* extraction functions, not used much *)
 (* deprecated
 let string_of_value : value -> string result = function
-  | `String s -> Result.Ok s
+ | `String s -> Result.Ok s
   | _ -> Result.Error (Invalid_argument "Expr.string_of_value") (* an ill-formed expression was built *)
 let int_of_value : value -> int result = function
   | `Int i -> Result.Ok i
@@ -47,6 +47,10 @@ module Funct =
     type unary =
       [ `Uppercase
       | `Lowercase
+      | `Upper_letters (* string filter, only uppercase letters *)
+      | `Lower_letters (* string filter, only lowercase letters *)
+      | `Letters (* string filter, only letters *)
+      | `Digits (* string filter, only digits *)
       | `Prefix of int (* 1: first char, -1: all chars except the last *)
       | `Suffix of int (* 1: last char, -1: all chars except the first *)
       (* TODO: make Prefix and Suffix binary, to use ints from data ? *)
@@ -58,15 +62,28 @@ module Funct =
       | `Hours 
       | `Minutes 
       | `Seconds ]
-    let nb_unary = 12
+    let nb_unary = 16
 
     type binary =
       [ `Append
       | `Map_list ]
     let nb_binary = 2
 
+    let string_filter (p : char -> bool) (s : string) : string =
+      s
+      |> String.to_seq
+      |> Seq.filter p
+      |> String.of_seq
     let uppercase (s : string) : string = String.uppercase_ascii s
     let lowercase (s : string) : string = String.lowercase_ascii s
+    let upper_letters (s : string) : string =
+      s |> string_filter (fun c -> c >= 'A' && c <= 'Z')
+    let lower_letters (s : string) : string =
+      s |> string_filter (fun c -> c >= 'a' && c <= 'z')
+    let letters (s : string) : string =
+      s |> string_filter (fun c -> c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z')
+    let digits (s : string) : string =
+      s |> string_filter (fun c -> c >= '0' && c <= '9')
     let prefix ~(pos : int) (s : string) : string result =
       let n = String.length s in
       if s = "" then Result.Error (Invalid_argument "function prefix")
@@ -95,6 +112,10 @@ module Funct =
     let xp_unary (print : Xprint.t) : unary -> unit = function
       | `Uppercase -> print#string "uppercase"
       | `Lowercase -> print#string "lowercase"
+      | `Upper_letters -> print#string "upper_letters"
+      | `Lower_letters -> print#string "lower_letters"
+      | `Letters -> print#string "letters"
+      | `Digits -> print#string "digits"
       | `Prefix pos -> print#string "prefix["; print#int pos; print#string "]"
       | `Suffix pos -> print#string "suffix["; print#int pos; print#string "]"
       | `Length -> print#string "length"
@@ -151,6 +172,18 @@ and eval_unary f v1 =
      Result.Ok (`String res)
   | `Lowercase, `String s1 ->
      let res = Funct.lowercase s1 in
+     Result.Ok (`String res)
+  | `Upper_letters, `String s1 ->
+     let res = Funct.upper_letters s1 in
+     Result.Ok (`String res)
+  | `Lower_letters, `String s1 ->
+     let res = Funct.lower_letters s1 in
+     Result.Ok (`String res)
+  | `Letters, `String s1 ->
+     let res = Funct.letters s1 in
+     Result.Ok (`String res)
+  | `Digits, `String s1 ->
+     let res = Funct.digits s1 in
      Result.Ok (`String res)
   | `Prefix pos, `String s1 ->
      let| res = Funct.prefix ~pos s1 in
@@ -425,7 +458,7 @@ let make_index (bindings : ('var * value) list) : 'var index =
     add_layer_unary index
       (function
        | `String _ ->
-          let res = [`Length] in
+          let res = [`Length; `Upper_letters; `Lower_letters; `Letters; `Digits] in
           let res =
             List.fold_left
               (fun res pos ->
@@ -434,7 +467,7 @@ let make_index (bindings : ('var * value) list) : 'var index =
               res [1;2;3] in
           res
        | `List (`String _ :: _) ->
-          let res = [`Length; `Concat] in
+          let res = [`Length; `Concat; `Upper_letters; `Lower_letters; `Letters; `Digits] in
           let res =
             List.fold_left
               (fun res pos ->

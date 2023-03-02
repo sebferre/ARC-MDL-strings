@@ -64,7 +64,9 @@ let ( let+|+ ) = result_list_bind_some
 
 
 (* seq *)
-                   
+
+module Seq = Stdlib.Seq (* the standard one, not Myseq *)
+
 let ( let* ) seq f = seq |> Myseq.flat_map f [@@inline]
 let ( let*? ) seq f = seq |> Myseq.filter_map f [@@inline]
 let ( let*! ) seq f = seq |> Myseq.map f [@@inline]
