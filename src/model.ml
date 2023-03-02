@@ -311,7 +311,7 @@ let rec bindings_aux : type a. a ctx -> a model -> a data -> bindings -> binding
        List.fold_left2
          (fun (i,acc) mi di ->
            let ctxi = (fun p -> Col (i,p)) in
-           let acc = (ctxi This, `String (contents_of_data di)) :: acc in (* access to full cell contents *)
+           (* let acc = (ctxi This, `String (contents_of_data di)) :: acc in (* access to full cell contents => too uncertain *) *)
            i+1, bindings_aux ctxi mi di acc)
          (0,acc) lm ld in
      acc
@@ -654,7 +654,7 @@ let rec dl_model_env_stats : type a. a model -> int = function
   (* counting paths to tokens (see bindings) *)
   | Row lm ->
      List.fold_left
-       (fun res m -> res + 1 + dl_model_env_stats m) (* a ref for full cells *)
+       (fun res m -> res + (* 1 + *) dl_model_env_stats m) (* a ref for full cells => too uncertain*)
        0 lm
   | Empty -> 0
   | Nil -> 0
