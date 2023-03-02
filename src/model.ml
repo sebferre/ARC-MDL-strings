@@ -109,10 +109,12 @@ let xp_brackets (print : Xprint.t) (xp : Xprint.t -> unit) : unit =
 let rec id_of_path : type a. ?power2:int -> ?acc:int -> a path -> string =
   fun ?(power2 = 1) ?(acc = 0) p ->
   match p with
-  | This -> string_of_int (power2 + acc)
+  | This -> (* tokens *)
+     let id = power2 + acc in
+     string_of_int id
   | Col (i,p1) ->
      String.make 1 (Char.chr (Char.code 'A' + i)) (* column letter *)
-     ^ id_of_path ~power2:1 ~acc:0 p1
+     ^ (if p1=This then "" else id_of_path ~power2:1 ~acc:0 p1)
   | Left p1 -> id_of_path ~power2:(2 * power2) ~acc p1
   | Right p1 -> id_of_path ~power2:(2 * power2) ~acc:(power2 + acc) p1
   | Middle p1 -> id_of_path ~power2 ~acc p1
@@ -147,6 +149,7 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
        (fun i m ->
          let ctx_cell = ctx |> Option.map (fun ctx -> (fun p -> ctx (Col (i,p)))) in
          if i > 0 then print#string "</br>";
+         ctx |> Option.iter (fun ctx -> xp_row_path print (ctx (Col (i,This))); print#string "&nbsp;");
          xp_model ~prio_ctx print ?ctx:ctx_cell m)
        lm
   | Empty -> print#string "∅"
@@ -203,9 +206,7 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
   | Regex re ->
      let p_opt = ctx |> Option.map (fun ctx -> ctx This) in
      print#string "<span class=\"model-regex\">";
-     print#string "?";
-     p_opt |> Option.iter (fun p -> xp_row_path print p);
-     print#string " : ";
+     p_opt |> Option.iter (fun p -> xp_row_path print p; print#string " : ");
      xp_regex_model print re;
      print#string "</span>"
   | Expr e ->
