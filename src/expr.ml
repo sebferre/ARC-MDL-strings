@@ -411,6 +411,13 @@ module MakeIndex (V : Map.OrderedType) =
          | Some exprs -> Some (item :: exprs))
         index
 
+    let bind_set (v : V.t) (es : 'var exprset) (index : 'var t) : 'var t =
+      M.update v
+        (function
+         | None -> Some es
+         | Some exprs -> Some (List.rev_append es exprs))
+        index
+
     let find_opt = M.find_opt
 
     let fold = M.fold
@@ -485,9 +492,14 @@ let make_index (bindings : ('var * value) list) : 'var index =
       (function
        | `String _ | `List (`String _ :: _) -> [`Uppercase; `Lowercase]
        | _ -> []) in
-  let index = (* level 3 *)
+  (*let index = (* level 3 *) (* too many combinations *)
     add_layer_binary index
       (function
        | `String _, `String _ -> [`Append]
-       | _ -> []) in
-  index
+       | _ -> []) in*)
+  Index.fold (* making some values available as strings, extend Model.apply/Expr accordingly *)
+    (fun v exprs res ->
+      match v with
+      | `Int i -> Index.bind_set (`String (string_of_int i)) exprs res
+      | _ -> res)
+    index index

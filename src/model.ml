@@ -369,6 +369,7 @@ let rec apply : type a. a model -> env -> a model result =
      let| v = eval_expr_on_env e env in
      (match v with
       | `String s -> Result.Ok (Const s)
+      | `Int i -> Result.Ok (Const (string_of_int i))
       (* TODO: consider converting other values to strings *)
       | `Null -> Result.Error NullExpr
       | _ -> Result.Error (Invalid_argument "Model.token_apply: string expected as expression value"))
