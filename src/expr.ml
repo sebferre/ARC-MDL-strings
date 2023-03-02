@@ -47,7 +47,9 @@ module Funct =
     type unary =
       [ `Uppercase
       | `Lowercase
-      | `Initial
+      | `Prefix of int (* 1: first char, -1: all chars except the last *)
+      | `Suffix of int (* 1: last char, -1: all chars except the first *)
+      (* TODO: make Prefix and Suffix binary, to use ints from data ? *)
       | `Length
       | `Concat
       | `Day
@@ -56,7 +58,7 @@ module Funct =
       | `Hours 
       | `Minutes 
       | `Seconds ]
-    let nb_unary = 11
+    let nb_unary = 12
 
     type binary =
       [ `Append
@@ -65,10 +67,18 @@ module Funct =
 
     let uppercase (s : string) : string = String.uppercase_ascii s
     let lowercase (s : string) : string = String.lowercase_ascii s
-    let initial (s : string) : string result =
-      if s = ""
-      then Result.Error (Invalid_argument "function initial")
-      else Result.Ok (String.sub s 0 1)
+    let prefix ~(pos : int) (s : string) : string result =
+      let n = String.length s in
+      if s = "" then Result.Error (Invalid_argument "function prefix")
+      else if pos > 0 && pos <= n then Result.Ok (String.sub s 0 pos)
+      else if pos < 0 && pos > -n then Result.Ok (String.sub s 0 (n + pos))
+      else Result.Error (Invalid_argument "function prefix, wrong pos")
+    let suffix ~(pos : int) (s : string) : string result =
+      let n = String.length s in
+      if s = "" then Result.Error (Invalid_argument "function suffix")
+      else if pos > 0 && pos < n then Result.Ok (String.sub s pos (n-pos))
+      else if pos < 0 && pos >= -n then Result.Ok (String.sub s (n+pos) (-pos))
+      else Result.Error (Invalid_argument "function suffix, wrong pos")
     let length (s : string) : int = String.length s
     let concat (l : string list) : string = String.concat "" l
     let year (d : date) : int = d.year
@@ -85,7 +95,8 @@ module Funct =
     let xp_unary (print : Xprint.t) : unary -> unit = function
       | `Uppercase -> print#string "uppercase"
       | `Lowercase -> print#string "lowercase"
-      | `Initial -> print#string "initial"
+      | `Prefix pos -> print#string "prefix["; print#int pos; print#string "]"
+      | `Suffix pos -> print#string "suffix["; print#int pos; print#string "]"
       | `Length -> print#string "length"
       | `Concat -> print#string "concat"
       | `Day -> print#string "day"
@@ -141,8 +152,11 @@ and eval_unary f v1 =
   | `Lowercase, `String s1 ->
      let res = Funct.lowercase s1 in
      Result.Ok (`String res)
-  | `Initial, `String s1 ->
-     let| res = Funct.initial s1 in
+  | `Prefix pos, `String s1 ->
+     let| res = Funct.prefix ~pos s1 in
+     Result.Ok (`String res)
+  | `Suffix pos, `String s1 ->
+     let| res = Funct.suffix ~pos s1 in
      Result.Ok (`String res)
   | `Length, `String s1 ->
      let res = Funct.length s1 in
@@ -219,8 +233,18 @@ and eval_binary f v1 v2 =
             eval_binary f v1 v2'))
   | _ -> Result.Error (Invalid_eval_binary (f,v1,v2))
 
-let dl_funct = Mdl.Code.uniform (Funct.nb_unary + Funct.nb_binary + 1 (* Fun *))
-     
+let dl_funct_choice = Mdl.Code.uniform (Funct.nb_unary + Funct.nb_binary + 1 (* Fun *))
+
+let dl_funct_unary (f : Funct.unary) : dl =
+  match f with
+  | `Prefix pos | `Suffix pos ->
+     dl_funct_choice +. Mdl.Code.universal_int_plus (abs pos) +. 1. (* pos sign *)
+  | _ -> dl_funct_choice (* other functions have no args *)
+
+let dl_funct_binary (f : Funct.binary) : dl =
+  match f with
+  | _ -> dl_funct_choice (* all functions have no args *)
+       
 let rec dl_expr (dl_var : 'var -> dl) (e : 'var expr) : dl =
   let nb_funct, nb_arg = dl_expr_stats e in
   assert (nb_arg = 0);
@@ -233,7 +257,7 @@ and dl_expr_aux dl_var nb_funct nb_arg = function
      dl_var p
   | `Unary (f,e1) ->
      assert (nb_funct > 0);
-     dl_funct
+     dl_funct_unary f
      +. dl_expr_aux dl_var (nb_funct - 1) nb_arg e1
   | `Binary (f,e1,e2) ->
      assert (nb_funct > 0);
@@ -241,7 +265,7 @@ and dl_expr_aux dl_var nb_funct nb_arg = function
      let nbf2, nba2 = dl_expr_stats e2 in
      assert (nbf1 + nbf2 + 1 = nb_funct);
      assert (nba1 + nba2 = nb_arg);
-     dl_funct
+     dl_funct_binary f
      +. Mdl.Code.uniform nb_funct (* choosing split of functions between e1 and e2 *)
      +. Mdl.Code.uniform (nb_arg + 1) (* choosing split of args between e1 and e2 *)
      +. dl_expr_aux dl_var nbf1 nba1 e1
@@ -253,7 +277,7 @@ and dl_expr_aux dl_var nb_funct nb_arg = function
   | `Fun e1 ->
      assert (nb_funct > 0);
      assert (nb_arg = 0);
-     dl_funct
+     dl_funct_choice
      +. dl_expr_aux dl_var (nb_funct - 1) 1 e1
 and dl_expr_stats : 'var expr -> int * int = function (* counting function applications and abstractions, and nb of args *)
   | `Ref _ -> 0, 0
@@ -393,24 +417,42 @@ let make_index (bindings : ('var * value) list) : 'var index =
           index res)
       index index
   in
-  let index =
+  let index = (* level 0 *)
     List.fold_left
       (fun res (x,v) -> Index.bind v (`Ref x) res)
       Index.empty bindings in
-  let index =
+  let index = (* level 1 *)
     add_layer_unary index
       (function
-       | `String _ -> [`Length; `Initial]
-       | `List (`String _ :: _) -> [`Length; `Initial; `Concat]
-       | `Date _ | `List (`Date _ :: _) -> [`Year; `Month; `Day]
-       | `Time _ | `List (`Time _ :: _) -> [`Hours; `Minutes; `Seconds]
+       | `String _ ->
+          let res = [`Length] in
+          let res =
+            List.fold_left
+              (fun res pos ->
+                `Prefix pos :: `Prefix (-pos) ::
+                  `Suffix pos :: `Suffix (-pos) :: res)
+              res [1;2;3] in
+          res
+       | `List (`String _ :: _) ->
+          let res = [`Length; `Concat] in
+          let res =
+            List.fold_left
+              (fun res pos ->
+                `Prefix pos :: `Prefix (-pos) ::
+                  `Suffix pos :: `Suffix (-pos) :: res)
+              res [1;2;3] in
+          res
+       | `Date _ | `List (`Date _ :: _) ->
+          [`Year; `Month; `Day]
+       | `Time _ | `List (`Time _ :: _) ->
+          [`Hours; `Minutes; `Seconds]
        | _ -> []) in
-  let index =
+  let index = (* level 2 *)
     add_layer_unary index
       (function
        | `String _ | `List (`String _ :: _) -> [`Uppercase; `Lowercase]
        | _ -> []) in
-  let index =
+  let index = (* level 3 *)
     add_layer_binary index
       (function
        | `String _, `String _ -> [`Append]
