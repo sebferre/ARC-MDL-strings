@@ -10,6 +10,11 @@ module TEST = (* for profiling visually, used for the JS version *)
       res
   end
 
+(* tuples *)
+
+type 'a double = 'a * 'a
+type 'a triple = 'a * 'a * 'a
+  
 (* list *)
   
 let rec list_update (f : 'a -> 'a) (i : int) : 'a list -> 'a list = function
@@ -82,8 +87,6 @@ let myseq_concat_if cond seq1 seq2 =
 
 (* mdl *)
                    
-type 'a triple = 'a * 'a * 'a
-
 type dl = Mdl.bits
 
 let dl0 = 0.

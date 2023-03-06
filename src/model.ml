@@ -47,7 +47,7 @@ type regex_model =
   | Separators (* spaces, puncts, quotes, brackets *)
   | Spaces (* [ \n\t\r\f]+ *)
 let nb_regex = 7
-  
+
 let re_content = Str.regexp "[A-Za-z_0-9#$%&*+/<=>@\\^|~-]+"
 let re_word = Str.regexp "[A-Za-z_][A-Za-z_0-9]*"
 let re_letters = Str.regexp "[A-Za-z]+"
@@ -195,6 +195,7 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
   | Const s ->
      let p_opt = ctx |> Option.map (fun ctx -> ctx This) in
      print#string "<span class=\"model-const\"";
+     (*     p_opt |> Option.iter (fun p -> xp_row_path print p; print#string ": "); *)
      p_opt |> Option.iter (* print path as tooltip *)
                 (fun p ->
                   print#string " title=\"";
@@ -206,7 +207,7 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
   | Regex re ->
      let p_opt = ctx |> Option.map (fun ctx -> ctx This) in
      print#string "<span class=\"model-regex\">";
-     p_opt |> Option.iter (fun p -> xp_row_path print p; print#string " : ");
+     p_opt |> Option.iter (fun p -> xp_row_path print p; print#string ": ");
      xp_regex_model print re;
      print#string "</span>"
   | Expr e ->
@@ -292,11 +293,8 @@ let rec find : type a. a path -> a data -> Expr.value result =
   | Left p1, DFactor (l,_,_) -> find p1 l
   | Middle p1, DFactor (_,t,_) -> find p1 t
   | Right p1, DFactor (_,_,r) -> find p1 r
-  | Index (i,p1), DAlt (i',c) ->
-     if i = i'
-     then find p1 c
-     else Result.Ok `Null
-  | _ -> assert false
+  | Index (i,p1), DAlt (i',c) when i = i' -> find p1 c
+  | _ -> Result.Ok `Null
 
 type bindings = (var * Expr.value) list
 let bindings0 = []
@@ -381,13 +379,13 @@ let rec apply : type a. a model -> env -> a model result =
 (* generate *)
 
 let regex_generate : regex_model -> string = function
-  | Content -> "A-b_1&2"
-  | Word -> "Ab_1"
-  | Letters -> "Abc"
-  | Decimal -> "12.3"
-  | Digits -> "123"
-  | Separators -> ", "
-  | Spaces -> " "
+  | Content -> "<content>"
+  | Word -> "<word>"
+  | Letters -> "<letters>"
+  | Decimal -> "<decimal>"
+  | Digits -> "<digits>"
+  | Separators -> "<separators>"
+  | Spaces -> "<spaces>"
 
 let rec generate : type a. a model -> a data = function
   | Row lm -> DRow (List.map generate lm)
@@ -762,8 +760,7 @@ let rec dl_model_aux : type a. nb_env_paths:int -> a model -> (int * int * int) 
      Mdl.Code.usage 0.5
      +. Expr.dl_expr
           (fun p ->
-            let k = nb_env_paths in
-            assert (k > 0);
+            let k = max 1 nb_env_paths in (* to avoid 0, happens in pruning mode *)
             Mdl.Code.uniform k)
           e
 
@@ -875,6 +872,10 @@ let rec encoder : type a. a model -> a data encoder = function
   | Expr _ -> (fun _ -> 0.) (* nothing to code, evaluated *)
 
 
+let dl_parse_rank (rank : int) : dl =
+  (* penalty DL for parse rank, starting at 0 *)
+  Mdl.Code.universal_int_star rank -. 1.
+
 (* reading *)
 
 type 'a read =
@@ -891,7 +892,7 @@ let limit_dl (f_dl : 'a -> dl) (l : 'a list) : 'a list =
      let min_dl = !max_parse_dl_factor *. dl0 in
      List.filter (fun x -> f_dl x <= min_dl) l
 
-let read ~(env_model : row model) ~(env : env)
+let read ?(dl_assuming_contents_known = false) ~(env_model : row model) ~(env : env)
       (m0 : row model) (ls : string list) : row read list result =
   Common.prof "Model.read" (fun () ->
   let| m = apply m0 env in (* reducing expressions *)
@@ -913,11 +914,18 @@ let read ~(env_model : row model) ~(env : env)
     let best_parses =
       l_parses (* QUICK *)
       |> List.stable_sort (fun (_,_,dl1) (_,_,dl2) -> dl_compare dl1 dl2)
-      |> (fun l -> Common.sub_list l 0 !max_nb_reads)
+      |> (fun l -> Common.sub_list l 0
+                     (if dl_assuming_contents_known then 1 else !max_nb_reads))
+                     (* in pruning mode, only best read as we simulate prediction *)
+                     (* TODO: should be handled by DLs *)
       |> limit_dl (fun (_,_,dl) -> dl)
       |> List.mapi (fun rank (env,data,dl) ->
              let index = Expr.make_index (bindings env_model env) in
-             let dl = dl +. Mdl.Code.universal_int_star rank in (* to penalize later parses, in case of equivalent parses *)
+             let dl_rank = dl_parse_rank rank in
+             let dl =
+               if dl_assuming_contents_known
+               then dl_rank
+               else dl +. dl_rank in (* to penalize later parses, in case of equivalent parses *)
              { env;  index; data; dl }) in
     Result.Ok best_parses)
 
@@ -937,8 +945,8 @@ let write ~(env : env) (m : row model) : (string list, exn) Result.t = Common.pr
 (* refinements *)
 
 type refinement =
-  | RCell of cell model (* cell specialization *)
-  | RToken of token model (* token specialization *)
+  | RCell of cell model (* cell replacement *)
+  | RToken of token model (* token replacement *)
 
 let xp_support (print : Xprint.t) (supp : int) =
   print#string " ("; print#int supp; print#string ")"
@@ -955,12 +963,21 @@ let rec apply_refinement : type a. refinement -> a path -> a model -> a model =
   | Col (i,p1), Row lm, _ ->
      (try Row (list_update (apply_refinement rf p1) i lm)
       with Not_found -> assert false)
+
   | This, Any, RCell cell -> cell
+  | This, Nil, RCell cell -> cell
+  | This, Factor _, RCell cell -> cell
   | Left p1, Factor (l,t,r), _ -> Factor (apply_refinement rf p1 l, t, r)
   | Middle p1, Factor (l, t, r), _ -> Factor (l, apply_refinement rf p1 t, r)
   | Right p1, Factor (l, t, r), _ -> Factor (l, t, apply_refinement rf p1 r)
-  | Index (1,p1), Alt (c1, c2), _ -> Alt (apply_refinement rf p1 c1, c2)
+  | Index (1,p1), Alt (c1, c2), _ ->
+     (match apply_refinement rf p1 c1 with
+      | Any -> Any (* absorbs the second branch *)
+      | c1' ->
+         if c1' = c2 then c2 
+         else Alt (c1', c2))
   | Index (2,p1), Alt (c1, c2), _ -> Alt (c1, apply_refinement rf p1 c2)
+
   | This, Const _, RToken tok -> tok
   | This, Regex _, RToken tok -> tok
   | _ -> assert false
@@ -1253,7 +1270,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
        let rm'_candidates =
          match rm with
          | Content -> [Word; Decimal]
-         | Word -> [Letters; Digits]
+         | Word -> [Letters]
          | Decimal -> [Digits]
          | Separators -> [Spaces]
          | _ -> [] in
@@ -1307,6 +1324,55 @@ let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : 
   Myseq.return (p, r, supp, dl', m')
 
 
+let rec prune_refinements : type a. a model -> (a path * refinement) Myseq.t = function
+  | Row lm ->
+     Myseq.interleave
+       (List.mapi
+          (fun i m ->
+            let* p, r = prune_refinements m in
+            Myseq.return (Col (i,p), r))
+          lm)
+  | Empty -> Myseq.empty
+  | Nil -> Myseq.empty
+  | Any -> Myseq.empty
+  | Factor (l,t,r) ->
+     Myseq.concat
+       [ (if (l = Any || l = Nil) && (r = Any || r = Nil) (* for progressivity *)
+          then Myseq.return (This, RCell Any)
+          else Myseq.empty);
+         prune_refinements l |> Myseq.map (fun (p,r) -> Left p, r);
+         prune_refinements t |> Myseq.map (fun (p,r) -> Middle p, r);
+         prune_refinements r |> Myseq.map (fun (p,r) -> Right p, r) ]
+  | Alt (c1,c2) ->
+     Myseq.concat
+       [ prune_refinements c1 |> Myseq.map (fun (p,r) -> Index (1,p), r);
+         prune_refinements c2 |> Myseq.map (fun (p,r) -> Index (2,p), r) ]
+  | Const s ->
+     let rm_opt =
+       List.find_opt
+         (fun rm ->
+           let re = re_of_regex rm in
+           regexp_match_full re s)
+         [Spaces; Letters; Word; Digits; Decimal] in
+     (match rm_opt with
+     | Some rm -> Myseq.return (This, RToken (Regex rm))
+     | None -> Myseq.empty)
+  | Regex rm ->
+     let lrm' =
+       match rm with
+       | Letters -> [Word]
+       | Digits -> [Decimal]
+(*       | Word -> [Content]
+       | Decimal -> [Content]
+       | Content -> []
+       | Spaces -> [Separators]
+       | Separators -> [] *)
+       | _ -> [] in
+     Myseq.from_list lrm'
+     |> Myseq.map (fun rm' -> (This, RToken (Regex rm')))
+  | Expr _ -> Myseq.empty
+
+
 (* examples  / pairs *)
              
 type task_model =
@@ -1333,7 +1399,7 @@ type pairs_reads = (* result of reading a list of pairs of grids *)
     reads : (row read * row read * dl) list list; (* outer list over examples, inner list over parses, sorted in increasing DL *)
   }
 
-let read_pairs (m : task_model) (pairs : Task.pair list) : pairs_reads result =
+let read_pairs ?(pruning = false) (m : task_model) (pairs : Task.pair list) : pairs_reads result =
   Common.prof "Model.read_pairs" (fun () ->
   (* takes model, input env+docs, output docs *)
   let dl_mi = dl_model ~nb_env_paths:0 m.input_model in    
@@ -1343,7 +1409,7 @@ let read_pairs (m : task_model) (pairs : Task.pair list) : pairs_reads result =
     |> list_map_result
          (fun {input; output} ->
            let| input_reads =
-             read ~env_model:env_model0 ~env:env0 m.input_model input in (* no diff allowed during training *)
+             read ~dl_assuming_contents_known:pruning ~env_model:env_model0 ~env:env0 m.input_model input in (* no diff allowed during training *)
            let| pair_reads = 
              let+|+ ri = Result.Ok input_reads in      
              let+|+ ro = read ~env_model:m.input_model ~env:ri.data m.output_model output in
@@ -1406,7 +1472,7 @@ let split_pairs_read (prs : pairs_reads) : reads * reads =
 let apply_model (m : task_model) (row_i : string list) : ((row data * string list) list, exn) Result.t =
   Common.prof "Model.apply_model" (fun () ->
   let+|+ read_i =
-    read ~env_model:env_model0 ~env:env0 m.input_model row_i in
+    read ~dl_assuming_contents_known:true ~env_model:env_model0 ~env:env0 m.input_model row_i in
   let| row_o =
     write ~env:read_i.data m.output_model in
   Result.Ok [(read_i.data, row_o)])
@@ -1427,12 +1493,14 @@ let rec xp_task_refinement (print : Xprint.t) = function
   | Rinput (p,ri,supp,dl') -> xp_task_refinement_aux print " In." p ri supp dl' "i"
   | Routput (p,ro,supp,dl') -> xp_task_refinement_aux print " Out." p ro supp dl' "o"
 and xp_task_refinement_aux print in_out p r supp dl' i_o =
-  print#string (Printf.sprintf " / ~%.3f%s)  " dl' i_o);
+  if dl' <> 0. (* undefined value *) then
+    print#string (Printf.sprintf " / ~%.3f%s)  " dl' i_o);
   print#string in_out;
   xp_row_path print p;
   print#string " ← ";
   xp_refinement print r;
-  xp_support print supp
+  if supp <> 0 (* undefined value *) then
+    xp_support print supp
 let pp_task_refinement = Xprint.to_stdout xp_task_refinement
 let string_of_task_refinement = Xprint.to_string xp_task_refinement
 
@@ -1451,40 +1519,47 @@ let task_refinements (last_r : task_refinement) (m : task_model) (prs : pairs_re
       (let* p, ro, suppo, dlo', mo = refinements ~nb_env_paths:(dl_model_env_stats m.input_model) ~dl_M:prs.dl_mo m.output_model dsro in
        Myseq.return (Routput (p,ro,suppo,dlo'), {m with output_model = mo})) ]
 
+let task_prune_refinements (m : task_model) : (task_refinement * task_model) Myseq.t =
+  let* pi, ri = prune_refinements m.input_model in
+  let mi' = apply_refinement ri pi m.input_model in
+  Myseq.return (Rinput (pi,ri,0,0.), {m with input_model = mi'})
+
 
 (* learning *)
 
 let learn_model
       ?(verbose = false)
       ?(pause = 0.)
-      ~timeout
+      ~timeout_build ~timeout_prune
       ~init_model
       ~beam_width ~refine_degree
       (pairs : Task.pair list)
-    : ((task_refinement * task_model) * (pairs_reads * reads * reads) * dl) list * bool
+    : (task_model * pairs_reads * bool) double
   = Common.prof "Model.learn_model" (fun () ->
   let norm_dl_model_data = make_norm_dl_model_data () in
+  let data_of_model ~pruning m =
+    Result.to_option
+      (let| prs = read_pairs ~pruning m pairs in
+       let drsi, drso = split_pairs_read prs in
+       Result.Ok (prs,drsi,drso))
+  in
+  let lm_build, timed_out_build =      
   Mdl.Strategy.beam
-    ~timeout
+    ~timeout:timeout_build
     ~beam_width
     ~refine_degree
     ~m0:(RInit, init_model)
     ~data:(fun (r,m) ->
       try
-        (*if verbose then (
-          print_string "\t=> "; pp_refinement r; print_newline ()); *)
-        Result.to_option
-          (let| prs = read_pairs m pairs in
-           let drsi, drso = split_pairs_read prs in
-           Result.Ok (prs,drsi,drso))
+        data_of_model ~pruning:false m
       with
       | Common.Timeout as exn -> raise exn
       | exn ->
          print_endline "ERROR while parsing examples with new model";
-	 print_endline (Printexc.to_string exn);
-	 pp_task_refinement r; print_newline ();
+         print_endline (Printexc.to_string exn);
+         pp_task_refinement r; print_newline ();
          pp_task_model m; print_newline ();
-	 raise exn)
+         raise exn)
     ~code:(fun (r,m) (prs,gsri,gsro) ->
 	   let (lmi,lmo,lm), (ldi,ldo,ld), (_lmdi,_lmdo,lmd) =
 	     norm_dl_model_data prs in
@@ -1535,5 +1610,35 @@ let learn_model
       (*Printf.printf "    l = %.1f = %.1f + %.1f = (%.1f + %.1f) + (%.1f + %.1f)\n" lmd lm ld lmi lmo ldi ldo;*)
       flush stdout;
       let refs = task_refinements r m prs gsri gsro in
-      refs))
+      refs) in
+  match lm_build with
+  | [] -> assert false
+  | ((_,m_build), (psr_build,_,_), _)::_ ->
+     let lm_prune, timed_out_prune =
+       if timeout_prune = 0 (* no pruning *)
+       then lm_build, timed_out_build
+       else
+         Mdl.Strategy.beam
+           ~timeout:timeout_prune
+           ~beam_width:1
+           ~refine_degree
+           ~m0:(RInit, m_build)
+           ~data:(fun (r,m) ->
+             try data_of_model ~pruning:true m
+             with _ -> None)
+           ~code:(fun (r,m) (psr,sri,sro) ->
+	     let (lmi,lmo,lm), (ldi,ldo,ld), (_lmdi,_lmdo,lmd) =
+               norm_dl_model_data psr in
+             if verbose then (
+               Printf.printf "\t?? %.3f\t" lmd;
+               pp_task_refinement r; print_newline ());
+             flush stdout;
+             lmd) (* only parse ranks counted for input grids *)
+           ~refinements:(fun (r,m) (psr,sri,sro) dl ->
+             task_prune_refinements m) in
+     match lm_prune with
+     | [] -> assert false
+     | ((_,m_prune), (psr_prune,_,_), _)::_ ->
+        (m_build, psr_build, timed_out_build),
+        (m_prune, psr_prune, timed_out_prune))
 
