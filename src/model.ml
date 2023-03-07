@@ -825,20 +825,20 @@ let rec encoder : type a. a model -> a data encoder = function
        let range_r = encoder_range r in
        (fun (nl,nt,nr) ->
          let n = nl + nt + nr in (* n is assumed known from above *)
-         let range_nl = Range.inter_list [
-                            Range.make_closed 0 n;
-                            range_l;
-                            Range.sub
-                              (Range.make_exact n)
-                              (Range.add range_t range_r) ] in
-         let range_nt = Range.inter_list [ (* given nl *)
-                            Range.make_closed 1 (n - nl);
+         let range_nt = Range.inter_list [
+                            Range.make_closed 1 n;
                             range_t;
                             Range.sub
-                              (Range.make_exact (n - nl))
+                              (Range.make_exact n)
+                              (Range.add range_l range_r) ] in
+         let range_nl = Range.inter_list [ (* given nt *)
+                            Range.make_closed 0 (n - nt);
+                            range_l;
+                            Range.sub
+                              (Range.make_exact (n - nt))
                               range_r ] in
-         Range.dl nl range_nl (* encoding nl given n, and ranges *)
-         +. Range.dl nt range_nt  (* encoding nt given n, n, and ranges  *)
+         Range.dl nt range_nt (* encoding nt given n, and ranges *)
+         +. Range.dl nl range_nl  (* encoding nl given n, nt, and ranges  *)
          +. 0. (* encoding nr = n - nl - nt *)
        ) in
      let enc_l = encoder l in
