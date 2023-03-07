@@ -143,6 +143,14 @@ type 'var expr =
   | `Fun of 'var expr (* support for unary functions, to be used as arg of higher-order functions *)
   ]
 
+let expr_asd : [`Expr] asd =
+  Mymap.empty
+  |> Mymap.add `Expr
+       ["Ref", [];
+        "Unary", [`Expr];
+        "Binary", [`Expr; `Expr]]
+(* Arg and Fun left for future work *)
+  
 let rec xp_expr (xp_var : 'var Xprint.xp) (print : Xprint.t) : 'var expr -> unit = function
   | `Ref p -> xp_var print p
   | `Unary (f,e1) -> Funct.xp_unary print f; print#string "("; xp_expr xp_var print e1; print#string ")"
@@ -266,65 +274,40 @@ and eval_binary f v1 v2 =
             eval_binary f v1 v2'))
   | _ -> Result.Error (Invalid_eval_binary (f,v1,v2))
 
-let dl_funct_choice = Mdl.Code.uniform (Funct.nb_unary + Funct.nb_binary + 1 (* Fun *))
-
+       
+(* description lengths *)
+       
 let dl_funct_unary (f : Funct.unary) : dl =
-  match f with
-  | `Prefix pos | `Suffix pos ->
-     dl_funct_choice +. Mdl.Code.universal_int_plus (abs pos) +. 1. (* pos sign *)
-  | _ -> dl_funct_choice (* other functions have no args *)
+  Mdl.Code.uniform Funct.nb_unary
+  +. (match f with
+      | `Prefix pos | `Suffix pos ->
+         Mdl.Code.universal_int_plus (abs pos) +. 1. (* pos sign *)
+      | _ -> 0.)
 
 let dl_funct_binary (f : Funct.binary) : dl =
-  match f with
-  | _ -> dl_funct_choice (* all functions have no args *)
-       
-let rec dl_expr (dl_var : 'var -> dl) (e : 'var expr) : dl =
-  let nb_funct, nb_arg = dl_expr_stats e in
-  assert (nb_arg = 0);
-  Mdl.Code.universal_int_star nb_funct
-  +. dl_expr_aux dl_var nb_funct 0 e
-and dl_expr_aux dl_var nb_funct nb_arg = function
-  | `Ref p ->
-     assert (nb_funct = 0);
-     assert (nb_arg = 0);
-     dl_var p
+  Mdl.Code.uniform Funct.nb_binary
+
+let dl_expr_ast = make_dl_ast expr_asd
+
+let rec dl_expr_aux (dl_var : 'var -> dl) : 'var expr -> int (* AST size *) * float = function
+  | `Ref p -> 1, dl_var p
   | `Unary (f,e1) ->
-     assert (nb_funct > 0);
-     dl_funct_unary f
-     +. dl_expr_aux dl_var (nb_funct - 1) nb_arg e1
+     let n1, dl1 = dl_expr_aux dl_var e1 in
+     1 + n1,
+     dl_funct_unary f +. dl1
   | `Binary (f,e1,e2) ->
-     assert (nb_funct > 0);
-     let nbf1, nba1 = dl_expr_stats e1 in
-     let nbf2, nba2 = dl_expr_stats e2 in
-     assert (nbf1 + nbf2 + 1 = nb_funct);
-     assert (nba1 + nba2 = nb_arg);
-     dl_funct_binary f
-     +. Mdl.Code.uniform nb_funct (* choosing split of functions between e1 and e2 *)
-     +. Mdl.Code.uniform (nb_arg + 1) (* choosing split of args between e1 and e2 *)
-     +. dl_expr_aux dl_var nbf1 nba1 e1
-     +. dl_expr_aux dl_var nbf2 nba2 e2
-  | `Arg ->
-     assert (nb_funct = 0);
-     assert (nb_arg = 1);
-     0.
-  | `Fun e1 ->
-     assert (nb_funct > 0);
-     assert (nb_arg = 0);
-     dl_funct_choice
-     +. dl_expr_aux dl_var (nb_funct - 1) 1 e1
-and dl_expr_stats : 'var expr -> int * int = function (* counting function applications and abstractions, and nb of args *)
-  | `Ref _ -> 0, 0
-  | `Unary (f,e1) ->
-     let nbf1, nba1 = dl_expr_stats e1 in
-     1 + nbf1, nba1
-  | `Binary (f,e1,e2) ->
-     let nbf1, nba1 = dl_expr_stats e1 in
-     let nbf2, nba2 = dl_expr_stats e2 in
-     1 + nbf1 + nbf2, nba1 + nba2
-  | `Arg -> 0, 1
-  | `Fun e1 ->
-     let nbf1, nba1 = dl_expr_stats e1 in
-     1 + nbf1, 0 (* assuming all args in e1 bound by Fun *)
+     let n1, dl1 = dl_expr_aux dl_var e1 in
+     let n2, dl2 = dl_expr_aux dl_var e2 in
+     1 + n1 + n2,
+     dl_funct_binary f +. dl1 +. dl2
+  | `Arg -> raise TODO
+  | `Fun _ -> raise TODO
+
+let dl_expr (dl_var : 'var -> dl) (e : 'var expr) : dl =
+  let n, dl_leaves = dl_expr_aux dl_var e in
+  Mdl.Code.universal_int_plus n (* encoding expr AST size *)
+  +. dl_expr_ast `Expr n (* encoding AST structure *)
+  +. dl_leaves (* encoding AST leaves *)
 
                      
 (* expression sets : idea taken from FlashMeta *)
