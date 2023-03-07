@@ -313,7 +313,7 @@ let rec find : type a. a path -> a data -> Expr.value result =
 type bindings = (var * Expr.value) list
 let bindings0 = []
 
-let rec bindings_aux : type a. a ctx -> a model -> a data -> bindings -> bindings =
+let rec get_bindings_aux : type a. a ctx -> a model -> a data -> bindings -> bindings =
   fun ctx m d acc ->
   match m, d with
   | Expr _, _ -> acc (* exprs in output only *)
@@ -324,19 +324,19 @@ let rec bindings_aux : type a. a ctx -> a model -> a data -> bindings -> binding
          (fun (i,acc) mi di ->
            let ctxi = (fun p -> Col (i,p)) in
            (* let acc = (ctxi This, `String (contents_of_data di)) :: acc in (* access to full cell contents => too uncertain *) *)
-           i+1, bindings_aux ctxi mi di acc)
+           i+1, get_bindings_aux ctxi mi di acc)
          (0,acc) lm ld in
      acc
   | Nil, DNil -> acc
   | Any, DAny _ -> acc
   | Factor (l,t,r), DFactor (dl,dt,dr) ->
-     let acc = bindings_aux (fun p -> ctx (Right p)) r dr acc in
-     let acc = bindings_aux (fun p -> ctx (Left p)) l dl acc in
-     let acc = bindings_aux (fun p -> ctx (Middle p)) t dt acc in
+     let acc = get_bindings_aux (fun p -> ctx (Right p)) r dr acc in
+     let acc = get_bindings_aux (fun p -> ctx (Left p)) l dl acc in
+     let acc = get_bindings_aux (fun p -> ctx (Middle p)) t dt acc in
      acc
   | Alt (c1,c2), DAlt (i,dc) ->
      let c = if i = 1 then c1 else c2 in
-     let acc = bindings_aux (fun p -> ctx (Index (i,p))) c dc acc in
+     let acc = get_bindings_aux (fun p -> ctx (Index (i,p))) c dc acc in
      acc
   | _, DToken s ->
      if List.mem s special_consts
@@ -345,34 +345,42 @@ let rec bindings_aux : type a. a ctx -> a model -> a data -> bindings -> binding
      else (ctx This, `String s) :: acc
   | _ -> assert false
 
-let bindings (row : row model) (drow : row data) : bindings =
-  bindings_aux ctx0 row drow []
+let get_bindings (row : row model) (drow : row data) : bindings =
+  get_bindings_aux ctx0 row drow []
 
 let eval_expr_on_env e env =
   Expr.eval (fun p -> find p env) e
+
+let eval_expr_on_bindings e bindings =
+  Expr.eval
+    (fun p ->
+      match List.assoc_opt p bindings with
+      | Some v -> Result.Ok v
+      | None -> Result.Ok `Null)
+    e
   
 exception NullExpr (* error for expressions that contains a null value *)
 
-let rec apply : type a. a model -> env -> a model result =
-  fun m env ->
+let rec apply : type a. a model -> bindings -> a model result =
+  fun m bindings ->
   match m with
   | Row lm ->
      let| lm' =
        list_map_result
-         (fun m -> apply m env)
+         (fun m -> apply m bindings)
          lm in
      Result.Ok (Row lm')
   | Empty -> Result.Ok Empty
   | Nil -> Result.Ok Nil
   | Any -> Result.Ok Any
   | Factor (l,t,r) ->
-     let| l' = apply l env in
-     let| t' = apply t env in
-     let| r' = apply r env in
+     let| l' = apply l bindings in
+     let| t' = apply t bindings in
+     let| r' = apply r bindings in
      Result.Ok (Factor (l',t',r'))
   | Alt (c1,c2) ->
-     let res1 = apply c1 env in
-     let res2 = apply c2 env in
+     let res1 = apply c1 bindings in
+     let res2 = apply c2 bindings in
      (match res1, res2 with
       | Result.Ok c1', Result.Ok c2' -> Result.Ok (Alt (c1', c2'))
       | Result.Error NullExpr, Result.Ok c2' -> Result.Ok (Alt (Empty, c2'))
@@ -381,7 +389,7 @@ let rec apply : type a. a model -> env -> a model result =
   | Const s -> Result.Ok (Const s)
   | Regex re -> Result.Ok (Regex re)
   | Expr e ->
-     let| v = eval_expr_on_env e env in
+     let| v = eval_expr_on_bindings e bindings in
      (match v with
       | `String s -> Result.Ok (Const s)
       | `Int i -> Result.Ok (Const (string_of_int i))
@@ -405,7 +413,7 @@ let rec generate : type a. a model -> a data = function
   | Row lm -> DRow (List.map generate lm)
   | Empty -> assert false
   | Nil -> DNil
-  | Any -> DAny "..."
+  | Any -> DAny "<...>"
   | Factor (l,t,r) -> DFactor (generate l, generate t, generate r)
   | Alt (c1,c2) -> (* TODO: make stochastic ? *)
      if c1 <> Empty then DAlt (1, generate c1)
@@ -636,7 +644,7 @@ let ascii_init_occs =
   ]
 
 let init_occs_of_regex = function
-  (* | Content | Word | Letters -> Some ascii_init_occs *)
+  (* | Content | Word | Letters -> Some ascii_init_occs *) (* left for future work *)
   | _ -> None
      
 let dl_chars ?init_occs chars (s : string) : dl =
@@ -654,14 +662,6 @@ let dl_string_regex (re : regex_model) (s : string) : dl =
   let init_occs = init_occs_of_regex re in
   dl_chars ?init_occs chars s
   
-(* let rec dl_doc_path : doc_path -> dl = function (* TODO: take env into account *)
-  | ThisDoc -> Mdl.Code.usage 0.5
-  | Left p1 -> Mdl.Code.usage 0.1 +. dl_doc_path p1
-  | Middle p1 -> Mdl.Code.usage 0.3 +. dl_token_path p1
-  | Right p1 -> Mdl.Code.usage 0.1 +. dl_doc_path p1
-and dl_token_path : token_path -> dl = function
-  | ThisToken -> 0. *)
-
 let rec dl_model_env_stats : type a. a model -> int = function
   (* counting paths to tokens (see bindings) *)
   | Row lm ->
@@ -842,6 +842,7 @@ let dl_parse_rank (rank : int) : dl =
 
 type 'a read =
   { env : env;
+    bindings : bindings;
     index : index;
     data : 'a data;
     dl : dl }
@@ -854,17 +855,18 @@ let limit_dl (f_dl : 'a -> dl) (l : 'a list) : 'a list =
      let min_dl = !max_parse_dl_factor *. dl0 in
      List.filter (fun x -> f_dl x <= min_dl) l
 
-let read ?(dl_assuming_contents_known = false) ~(env_model : row model) ~(env : env)
+let read ?(dl_assuming_contents_known = false) ~(env : env) ~(bindings : bindings)
       (m0 : row model) (ls : string list) : row read list result =
   Common.prof "Model.read" (fun () ->
-  let| m = apply m0 env in (* reducing expressions *)
+  let index = lazy (Expr.make_index bindings) in
+  let| m = apply m0 bindings in (* reducing expressions *)
   let parses =
     let* data, () = parse RowParsing m ls in
     let dl = (* QUICK *)
       let dl_data = encoder m data in
       (* rounding before sorting to absorb float error accumulation *)
       dl_round dl_data in
-    Myseq.return (env, data, dl) in
+    Myseq.return (data, dl) in
   let l_parses =
     Common.prof "Model.read_doc/first_parses" (fun () ->
         parses
@@ -875,20 +877,23 @@ let read ?(dl_assuming_contents_known = false) ~(env_model : row model) ~(env : 
   else
     let best_parses =
       l_parses (* QUICK *)
-      |> List.stable_sort (fun (_,_,dl1) (_,_,dl2) -> dl_compare dl1 dl2)
+      |> List.stable_sort (fun (_,dl1) (_,dl2) -> dl_compare dl1 dl2)
       |> (fun l -> Common.sub_list l 0
                      (if dl_assuming_contents_known then 1 else !max_nb_reads))
                      (* in pruning mode, only best read as we simulate prediction *)
                      (* TODO: should be handled by DLs *)
-      |> limit_dl (fun (_,_,dl) -> dl)
-      |> List.mapi (fun rank (env,data,dl) ->
-             let index = Expr.make_index (bindings env_model env) in
+      |> limit_dl (fun (_,dl) -> dl)
+      |> List.mapi (fun rank (data,dl) ->
              let dl_rank = dl_parse_rank rank in
              let dl =
                if dl_assuming_contents_known
                then dl_rank
                else dl +. dl_rank in (* to penalize later parses, in case of equivalent parses *)
-             { env;  index; data; dl }) in
+             { env;
+               bindings;
+               index=Lazy.force index;
+               data;
+               dl }) in
     Result.Ok best_parses)
 
 type reads =
@@ -898,8 +903,8 @@ type reads =
 
 (* writing *)
 
-let write ~(env : env) (m : row model) : (string list, exn) Result.t = Common.prof "Model.write_doc" (fun () ->
-  let| m' = apply m env in
+let write ~(bindings : bindings) (m : row model) : (string list, exn) Result.t = Common.prof "Model.write_doc" (fun () ->
+  let| m' = apply m bindings in
   let d = generate m' in
   let ls = contents_of_row_data d in
   Result.Ok ls)
@@ -1371,10 +1376,16 @@ let read_pairs ?(pruning = false) (m : task_model) (pairs : Task.pair list) : pa
     |> list_map_result
          (fun {input; output} ->
            let| input_reads =
-             read ~dl_assuming_contents_known:pruning ~env_model:env_model0 ~env:env0 m.input_model input in (* no diff allowed during training *)
+             read
+               ~dl_assuming_contents_known:pruning
+               ~env:env0 ~bindings:bindings0
+               m.input_model input in (* no diff allowed during training *)
            let| pair_reads = 
              let+|+ ri = Result.Ok input_reads in      
-             let+|+ ro = read ~env_model:m.input_model ~env:ri.data m.output_model output in
+             let+|+ ro =
+               read
+                 ~env:ri.data ~bindings:(get_bindings m.input_model ri.data)
+                 m.output_model output in
              let dl = ri.dl +. ro.dl in
              Result.Ok [(ri,ro,dl)] in
            let pair_reads =
@@ -1434,9 +1445,9 @@ let split_pairs_read (prs : pairs_reads) : reads * reads =
 let apply_model (m : task_model) (row_i : string list) : ((row data * string list) list, exn) Result.t =
   Common.prof "Model.apply_model" (fun () ->
   let+|+ read_i =
-    read ~dl_assuming_contents_known:true ~env_model:env_model0 ~env:env0 m.input_model row_i in
+    read ~dl_assuming_contents_known:true ~env:env0 ~bindings:bindings0 m.input_model row_i in
   let| row_o =
-    write ~env:read_i.data m.output_model in
+    write ~bindings:(get_bindings m.input_model read_i.data) m.output_model in
   Result.Ok [(read_i.data, row_o)])
 
   
