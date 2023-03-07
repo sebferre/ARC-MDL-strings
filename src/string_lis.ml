@@ -111,18 +111,18 @@ object
       let suggestions =
         InputTask (new Focus.input (name0,task0))
         :: ResetTask
-        :: (let new_stage =
-              match focus.stage with
-              | Build -> Prune
-              | Prune -> Build in
-            match state_of_model focus.name focus.task focus.norm_dl_model_data
-                    new_stage Model.RInit focus.model with
-            | Result.Ok s -> [ChangeStage s]
-            | Result.Error exn -> print_endline (Printexc.to_string exn); [])
-        @ List.map (fun s ->
+        :: List.map (fun s ->
                let compressive = s.norm_dl < focus.norm_dl in
                RefinedState ((s :> arc_state), compressive))
-             suggestions in
+             suggestions
+        @ (let new_stage =
+             match focus.stage with
+             | Build -> Prune
+             | Prune -> Build in
+           match state_of_model focus.name focus.task focus.norm_dl_model_data
+                   new_stage Model.RInit focus.model with
+           | Result.Ok s -> [ChangeStage s]
+           | Result.Error exn -> print_endline (Printexc.to_string exn); []) in
       Jsutils.firebug "Suggestions computed";
       focus.suggestions <- suggestions
     );
