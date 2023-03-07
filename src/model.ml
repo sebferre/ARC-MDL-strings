@@ -622,23 +622,23 @@ let ascii_init_occs =
   ]
 
 let init_occs_of_regex = function
-  | Content | Word | Letters -> Some ascii_init_occs
+  (* | Content | Word | Letters -> Some ascii_init_occs *)
   | _ -> None
      
-let dl_char_plus ?init_occs chars (s : string) : dl =
-  (* using prequential code *)
+let dl_chars ?init_occs chars (s : string) : dl =
+  (* using prequential code, assuming string length known *)
   let pc = new Mdl.Code.prequential ?init_occs chars () in
   String.iter
     (fun c -> ignore (pc#code c))
     s;
   pc#cumulated_dl
 
-let dl_string_ascii (s : string) : dl = dl_char_plus chars s
+let dl_string_ascii (s : string) : dl = dl_chars chars s
 
 let dl_string_regex (re : regex_model) (s : string) : dl =
   let chars = chars_of_regex re in
   let init_occs = init_occs_of_regex re in
-  dl_char_plus ?init_occs chars s
+  dl_chars ?init_occs chars s
   
 (* let rec dl_doc_path : doc_path -> dl = function (* TODO: take env into account *)
   | ThisDoc -> Mdl.Code.usage 0.5
