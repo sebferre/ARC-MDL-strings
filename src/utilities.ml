@@ -85,19 +85,6 @@ let myseq_concat_if cond seq1 seq2 =
   else seq2
 
 
-(* mdl *)
-                   
-type dl = Mdl.bits
-
-let dl0 = 0.
-
-let dl_round dl = Float.round (dl *. 1e9) /. 1e9
-
-let dl_compare (dl1 : float) (dl2 : float) =
-  if dl1 < dl2 then -1
-  else if dl1 = dl2 then 0
-  else 1 [@@inline]
-
 (* regex *)
   
 let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize *)
@@ -121,3 +108,54 @@ let rec sum_conv (lf : (int -> float) list) (n : int) : float =
          then res +. card1 *. sum_conv lf1 n'
          else res)
        1 n 0.
+
+(* mdl *)
+                   
+type dl = Mdl.bits
+
+let dl0 = 0.
+
+let dl_round dl = Float.round (dl *. 1e9) /. 1e9
+
+let dl_compare (dl1 : float) (dl2 : float) =
+  if dl1 < dl2 then -1
+  else if dl1 = dl2 then 0
+  else 1 [@@inline]
+
+
+type 't asd = ('t, (string * 't list) list) Mymap.t
+    
+let make_dl_ast (asd : 't asd)
+    : 't (* AST type *) -> int (* AST size *) -> dl (* dl of ASTs of that size *) =
+  let tab : ('t * int, float) Hashtbl.t = Hashtbl.create 1013 in
+  let rec aux (t : 't) (n : int) : float =
+    assert (n > 0); (* no null-sized AST *)
+    match Hashtbl.find_opt tab (t,n) with
+    | Some card -> card
+    | None ->
+       (match Mymap.find_opt t asd with
+        | None -> invalid_arg "Utilities.make_dl_ast: undefined ASD type"
+        | Some prods ->
+           let card =
+             List.fold_left (* sum over productions *)
+               (fun res (_name, args) ->
+                 let card_prod =
+                   if args = [] then (* leaf node *)
+                     if n = 1 then 1. else 0.
+                   else (* internal node *)
+                     if n > 1
+                     then sum_conv (List.map aux args) (n-1)
+                     else 0. in
+                 res +. card_prod)
+               0. prods
+           in
+           Hashtbl.add tab (t,n) card;
+           card)
+  in
+  fun t n ->
+  let card = aux t n in
+  assert (card > 0.);
+  Mdl.log2 card
+                    
+                    
+    

@@ -79,7 +79,21 @@ type _ model =
 
 let row_model0 (row_size : int) : row model = Row (List.init row_size (fun _ -> Any))
 let env_model0 = row_model0 0
-               
+
+let model_asd : [`Cell | `Token] asd =
+  Mymap.empty
+  |> Mymap.add `Cell
+       ["Nil", [];
+        "Any", [];
+        "Factor", [`Cell; `Token; `Cell];
+        "Alt", [`Cell; `Cell]]
+  |> Mymap.add `Token
+       ["Const", [];
+        "Regex", [];
+        "Expr", [];
+        "Alt", [`Token; `Token]]
+
+  
 type _ data =
   | DRow : cell data list -> row data
   | DNil : cell data
@@ -648,8 +662,6 @@ let dl_string_regex (re : regex_model) (s : string) : dl =
 and dl_token_path : token_path -> dl = function
   | ThisToken -> 0. *)
 
-(* REM old-style dl_model 
-  
 let rec dl_model_env_stats : type a. a model -> int = function
   (* counting paths to tokens (see bindings) *)
   | Row lm ->
@@ -672,141 +684,7 @@ let rec dl_model_env_stats : type a. a model -> int = function
   | Expr _ -> 0 (* exprs in output only *)
 
 
-(* TODO: need reflexion, and a generic solution for this problem *)            
-let rec dl_model_aux : type a. nb_env_paths:int -> a model -> (int * int * int) * dl = (* triple (nb_any, nb_factor, nb_alt *)
-  fun ~nb_env_paths m ->
-  match m with
-  | Row lm ->
-     (0,0,0), (* TODO: better choice? *)
-     Mdl.sum lm (* cell models are independent *)
-       (fun m ->
-         let (nb_any, nb_factor, nb_alt), dl = dl_model_aux ~nb_env_paths m in
-         Mdl.Code.universal_int_star nb_factor (* encoding total nb of factors/tokens *)
-         +. Mdl.Code.universal_int_star nb_any (* encoding total nb of Any's, to favor Nil's *)
-         (* +. Mdl.Code.uniform (nb_factor + 2) (* alternate encoding, based on bound for nb_any *) *)
-         +. Mdl.Code.universal_int_star nb_alt (* encoding total nb of Alt's *)
-         +. dl)
-  | Empty -> assert false
-  | Nil -> (0,0,0), 0.
-  | Any -> (1,0,0), 0.
-  | Factor (l,t,r) ->
-     let (na_l, nf_l, no_l), dl_l = dl_model_aux ~nb_env_paths l in
-     let (na_t, nf_t, no_t), dl_t = dl_model_aux ~nb_env_paths t in
-     let (na_r, nf_r, no_r), dl_r = dl_model_aux ~nb_env_paths r in
-     let nb_any = na_l + na_t + na_r in
-     let nb_factor = 1 + nf_l + nf_t + nf_r in
-     let nb_alt = no_l + nf_t + no_r in
-     (nb_any, nb_factor, nb_alt),
-     Mdl.Code.usage (float nb_factor /. float (nb_factor + nb_alt)) (* choice between Factor and Alt *)
-     +. (* encoding split of remaining Factor's, assuming nf_t = 0 so far *)
-       (let k = nb_factor in
-         assert (k > 0);
-         Mdl.Code.uniform k)
-     +. (* encoding split of Alt's, values of no_l vs no_t+no_r *)
-       (let k = nb_alt + 1
-          (* min nb_alt (na_l + nf_l) (* maximal possible no_l *)
-          - max 0 (nb_alt - (na_r + nf_r)) (* minimal possible no_l *)
-          + 1 *) in
-        assert (k > 0);
-        Mdl.Code.uniform k)
-     +. (* encoding split of Alt's, no_t vs no_r *)
-       (let k = nb_alt - no_l + 1 in
-         assert (k > 0);
-         Mdl.Code.uniform k)
-     +. (* encoding split of Any's, values of na_l, na_r, assuming na_t = 0 so far *)
-       (let k = (* nb_any + 1 *) (* TODO: refine *)
-          min nb_any (nf_l + no_l + 1) (* maximal possible value for na_l *)
-          - max 0 (nb_any - (nf_r + no_r + 1)) (* minimal possible value for na_l *)
-          + 1 in
-        assert (k > 0);
-        Mdl.Code.uniform k)
-     +. dl_l +. dl_t +. dl_r
-  | Alt (c1,c2) ->
-     let (na_c1, nf_c1, no_c1), dl1 = dl_model_aux ~nb_env_paths c1 in
-     let (na_c2, nf_c2, no_c2), dl2 = dl_model_aux ~nb_env_paths c2 in
-     let nb_any = na_c1 + na_c2 in
-     let nb_factor = nf_c1 + nf_c2 in
-     let nb_alt = 1 + no_c1 + no_c2 in
-     (nb_any, nb_factor, nb_alt),
-     Mdl.Code.usage (float nb_alt /. float (nb_alt + nb_factor)) (* choice between Factor and Alt *)
-     +.  (* one factor left, encoding split of remaining Factor's *)
-       (let k = nb_factor + 1 in
-        assert (k > 0);
-        Mdl.Code.uniform k)
-     +. (* encoding split of Alt's, values of no_l, no_r *)
-       (let k = nb_alt
-          (* min nb_alt (na_c1 + nf_c1) (* maximal possible no_l *)
-          - max 0 (nb_alt - (na_c2 + nf_c2)) (* minimal possible no_l *)
-          + 1 *) in
-        assert (k > 0);
-        Mdl.Code.uniform k) (* TODO: check for more constraints on nb of Alt's *)
-     +. (* encoding split of Any's, values of na_l, na_r *)
-       (let k = (* nb_any + 1 *)
-          min nb_any (nf_c1 + no_c1 + 1) (* maximal possible value for na_l *)
-          - max 0 (nb_any - (nf_c2 + no_c2 + 1)) (* minimal possible value for na_l *)
-          + 1 in
-        assert (k > 0);
-        Mdl.Code.uniform k)
-     +. dl1 +. dl2
-  | Const s ->
-     (0,0,0),
-     Mdl.Code.usage 0.3
-     +. Mdl.Code.universal_int_plus (String.length s)
-     +. dl_string_ascii s
-  | Regex rm ->
-     (0,0,0),
-     Mdl.Code.usage 0.2
-     +. Mdl.Code.uniform nb_regex
-  | Expr e ->
-     (0,0,0),
-     Mdl.Code.usage 0.5
-     +. Expr.dl_expr
-          (fun p ->
-            let k = max 1 nb_env_paths in (* to avoid 0, happens in pruning mode *)
-            Mdl.Code.uniform k)
-          e
-
-let dl_model ~(nb_env_paths : int) (m : 'a model) : dl =
-  let (nb_any, nb_factor, nb_alt), dl = dl_model_aux ~nb_env_paths m in
-  Mdl.Code.universal_int_star nb_factor (* encoding total nb of factors/tokens *)
-  +. Mdl.Code.universal_int_star nb_any (* encoding total nb of Any's, to favor Nil's *)
-  +. Mdl.Code.universal_int_star nb_alt (* encoding total nb of Alt *)
-  +. dl
-
- REM *)
-
-type model_level = LRow | LCell | LToken
-                                
-let tab_model_card : (model_level * int, float) Hashtbl.t = Hashtbl.create 1013
-
-let rec model_card (level : model_level) (n : int) : float =
-  assert (n > 0); (* no null-sized model *)
-  match Hashtbl.find_opt tab_model_card (level,n) with
-  | Some card -> card
-  | None ->
-     let card =
-       (* Row: undefined here *)
-       (* Nil *)
-       (if level = LCell && n = 1 then 1. else 0.)
-       +. (* Any *)
-         (if level = LCell && n = 1 then 1. else 0.)
-       +. (* Factor *)
-         (if level = LCell && n > 1
-          then sum_conv [model_card LCell; model_card LToken; model_card LCell] (n-1)
-          else 0.)
-       +. (* Alt *)
-         (if n > 1
-          then sum_conv [model_card level; model_card level] (n-1)
-          else 0.)
-       +. (* Const *)
-         (if level = LToken && n = 1 then 1. else 0.)
-       +. (* Regex *)
-         (if level = LToken && n = 1 then 1. else 0.)
-       +. (* Expr *)
-         (if level = LToken && n = 1 then 1. else 0.)
-     in
-     Hashtbl.add tab_model_card (level,n) card;
-     card
+let dl_model_ast = make_dl_ast model_asd
 
 let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) * dl =
   fun ~nb_env_paths m ->
@@ -816,10 +694,8 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
      Mdl.sum lm
        (fun mi ->
          let n, dl_leaves = dl_model_aux2 ~nb_env_paths mi in
-         let card = model_card LCell n in
-         assert (card > 0.);
          Mdl.Code.universal_int_star n (* size of the cell model *)
-         +. Mdl.log2 card (* Mdl.Code.uniform card *) (* choice of the n-length model tree structure *)
+         +. dl_model_ast `Cell n (* choice of the n-length model tree structure *)
          +. dl_leaves) (* encoding of model leaves *)
   | Empty -> assert false
   | Nil -> 1, 0.
