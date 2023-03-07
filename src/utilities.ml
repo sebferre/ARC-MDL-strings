@@ -104,3 +104,20 @@ let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize 
   Str.string_match re s 0
   && Str.match_end () = String.length s
 
+(* combinatorics *)
+
+let rec sum_conv (lf : (int -> float) list) (n : int) : float =
+  (* distributes [n] over functions in [lf], multiply results, sums over all distribs *)
+  assert (n > 0);
+  match lf with
+  | [] -> assert false
+  | [f1] -> f1 n
+  | f1::lf1 ->
+     Common.fold_for
+       (fun n1 res ->
+         let card1 = f1 n1 in
+         let n' = n - n1 in
+         if card1 > 0. && n' > 0
+         then res +. card1 *. sum_conv lf1 n'
+         else res)
+       1 n 0.

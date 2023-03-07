@@ -647,6 +647,8 @@ let dl_string_regex (re : regex_model) (s : string) : dl =
   | Right p1 -> Mdl.Code.usage 0.1 +. dl_doc_path p1
 and dl_token_path : token_path -> dl = function
   | ThisToken -> 0. *)
+
+(* REM old-style dl_model 
   
 let rec dl_model_env_stats : type a. a model -> int = function
   (* counting paths to tokens (see bindings) *)
@@ -771,6 +773,90 @@ let dl_model ~(nb_env_paths : int) (m : 'a model) : dl =
   +. Mdl.Code.universal_int_star nb_alt (* encoding total nb of Alt *)
   +. dl
 
+ REM *)
+
+type model_level = LRow | LCell | LToken
+                                
+let tab_model_card : (model_level * int, float) Hashtbl.t = Hashtbl.create 1013
+
+let rec model_card (level : model_level) (n : int) : float =
+  assert (n > 0); (* no null-sized model *)
+  match Hashtbl.find_opt tab_model_card (level,n) with
+  | Some card -> card
+  | None ->
+     let card =
+       (* Row: undefined here *)
+       (* Nil *)
+       (if level = LCell && n = 1 then 1. else 0.)
+       +. (* Any *)
+         (if level = LCell && n = 1 then 1. else 0.)
+       +. (* Factor *)
+         (if level = LCell && n > 1
+          then sum_conv [model_card LCell; model_card LToken; model_card LCell] (n-1)
+          else 0.)
+       +. (* Alt *)
+         (if n > 1
+          then sum_conv [model_card level; model_card level] (n-1)
+          else 0.)
+       +. (* Const *)
+         (if level = LToken && n = 1 then 1. else 0.)
+       +. (* Regex *)
+         (if level = LToken && n = 1 then 1. else 0.)
+       +. (* Expr *)
+         (if level = LToken && n = 1 then 1. else 0.)
+     in
+     Hashtbl.add tab_model_card (level,n) card;
+     card
+
+let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) * dl =
+  fun ~nb_env_paths m ->
+  match m with
+  | Row lm ->
+     1, (* not relevant *)
+     Mdl.sum lm
+       (fun mi ->
+         let n, dl_leaves = dl_model_aux2 ~nb_env_paths mi in
+         let card = model_card LCell n in
+         assert (card > 0.);
+         Mdl.Code.universal_int_star n (* size of the cell model *)
+         +. Mdl.log2 card (* Mdl.Code.uniform card *) (* choice of the n-length model tree structure *)
+         +. dl_leaves) (* encoding of model leaves *)
+  | Empty -> assert false
+  | Nil -> 1, 0.
+  | Any -> 1, 0.
+  | Factor (l,t,r) ->
+     let n_l, dl_l = dl_model_aux2 ~nb_env_paths l in
+     let n_t, dl_t = dl_model_aux2 ~nb_env_paths t in
+     let n_r, dl_r = dl_model_aux2 ~nb_env_paths r in
+     1 + n_l + n_t + n_r, (* one symbol for Factor *)
+     dl_l +. dl_t +. dl_r
+  | Alt (c1,Empty) -> dl_model_aux2 ~nb_env_paths c1
+  | Alt (Empty,c2) -> dl_model_aux2 ~nb_env_paths c2
+  | Alt (c1,c2) ->
+     let n_1, dl_1 = dl_model_aux2 ~nb_env_paths c1 in
+     let n_2, dl_2 = dl_model_aux2 ~nb_env_paths c2 in
+     1 + n_1 + n_2, (* 1 symbol for Alt *)
+     dl_1 +. dl_2
+  | Const s ->
+     1,
+     Mdl.Code.universal_int_plus (String.length s)
+     +. dl_string_ascii s
+  | Regex rm ->
+     1,
+     Mdl.Code.uniform nb_regex
+  | Expr e ->
+     1,
+     Expr.dl_expr
+       (fun p ->
+         let k = max 1 nb_env_paths in (* to avoid 0, happens in pruning mode *)
+         Mdl.Code.uniform k)
+       e
+
+let dl_model ~(nb_env_paths : int) (m : 'a model) : dl =
+  let n, dl = dl_model_aux2 ~nb_env_paths m in
+  Mdl.Code.universal_int_plus n (* encoding total nb of symbols *)
+  +. dl
+
   
 type 'a encoder = 'a -> dl
 
@@ -812,7 +898,7 @@ let rec encoder : type a. a model -> a data encoder = function
      (function _ -> assert false)
   | Nil ->
      (function
-      | DNil | DAny "" -> 0.
+      | DNil | DAny "" -> 0. (* TODO: why DAny "" required here? *)
       | _ -> assert false)
   | Any ->
      (function
