@@ -167,13 +167,13 @@ let xp_brackets_prio ~prio_ctx ~prio print xp =
   else xp_brackets print xp
 
 let xp_regex_model print = function
-  | Content -> print#string "Content"
-  | Word -> print#string "Word"
-  | Letters -> print#string "Letters"
-  | Decimal -> print#string "Decimal"
-  | Digits -> print#string "Digits"
-  | Separators -> print#string "Separators"
-  | Spaces -> print#string "Spaces"
+  | Content -> xp_string print "Content"
+  | Word -> xp_string print "Word"
+  | Letters -> xp_string print "Letters"
+  | Decimal -> xp_string print "Decimal"
+  | Digits -> xp_string print "Digits"
+  | Separators -> xp_string print "Separators"
+  | Spaces -> xp_string print "Spaces"
 
 let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model -> unit =
   fun ?(prio_ctx = 2) print ?ctx m ->
@@ -421,19 +421,19 @@ let rec apply : type a. a model -> bindings -> a model result =
 (* generate *)
 
 let regex_generate : regex_model -> string = function
-  | Content -> "<content>"
-  | Word -> "<word>"
-  | Letters -> "<letters>"
-  | Decimal -> "<decimal>"
-  | Digits -> "<digits>"
-  | Separators -> "<separators>"
-  | Spaces -> "<spaces>"
+  | Content -> "_content_"
+  | Word -> "_word_"
+  | Letters -> "_letters_"
+  | Decimal -> "_decimal_"
+  | Digits -> "_digits_"
+  | Separators -> "_separators_"
+  | Spaces -> "_spaces_"
 
 let rec generate : type a. a model -> a data = function
   | Row lm -> DRow (List.map generate lm)
   | Empty -> assert false
   | Nil -> DNil
-  | Any -> DAny "<...>"
+  | Any -> DAny "_"
   | Factor (l,t,r) -> DFactor (generate l, generate t, generate r)
   | Alt (c1,c2) -> (* TODO: make stochastic ? *)
      if c1 <> Empty then DAlt (1, generate c1)
