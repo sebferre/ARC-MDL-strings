@@ -10,7 +10,8 @@ let max_nb_parse = def_param "max_nb_parse" 256 string_of_int (* max nb of consi
 let max_nb_reads = def_param "max_nb_doc_reads" 3 string_of_int (* max nb of selected doc reads, passed to the next stage *)
 let max_parse_dl_factor = def_param "max_parse_dl_factor" 3. string_of_float (* compared to best parse, how much longer alternative parses can be *)
 let max_refinements = def_param "max_refinements" 100 string_of_int (* max nb of considered refinements *)
-
+let median_token_length = def_param "median_token_length" 6. string_of_float (* used in data encoder *)
+                    
 open Utilities
 
 (* types of model, data according to a model... *)
@@ -817,7 +818,11 @@ let rec encoder : type a. a model -> a data encoder = function
                             Range.sub
                               (Range.make_exact (n - nt))
                               range_r ] in
-         Range.dl nt range_nt (* encoding nt given n, and ranges *)
+         (* Range.dl nt range_nt (* encoding nt given n, and ranges, assuming uniform distribution *) *)
+         (match range_nt with
+          | Range.Closed (a,b) -> (* encoding nt in range_nt, assuming median value *)
+             dl_bell_range ~median:(!median_token_length) ~range:(a,b) nt
+          | _ -> assert false)
          +. Range.dl nl range_nl  (* encoding nl given n, nt, and ranges  *)
          +. 0. (* encoding nr = n - nl - nt *)
        ) in

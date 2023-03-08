@@ -156,4 +156,16 @@ let make_dl_ast (ASD asd : 't asd)
   Mdl.log2 card
                     
                     
-    
+(* for cumulated bell-shape probability with center value at median *)
+let sigmoid ~median x = 1. /. (1. +. exp (median -. x))
+
+(* DL of value x, known to be in range, given bell-shaped prob distrib of (x - median) *)
+let dl_bell_range ~(median : float) ~(range : int * int) (x : int) : dl =
+  let a, b = range in
+  assert (a <= b);
+  assert (a <= x && x <= b);
+  let prob =
+    (sigmoid ~median (float x +. 0.5) -. sigmoid ~median (float x -. 0.5))
+    /. (sigmoid ~median (float b +. 0.5) -. sigmoid ~median (float a -. 0.5)) in
+  -. (Mdl.log2 prob)
+
