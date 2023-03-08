@@ -80,19 +80,38 @@ type _ model =
 let row_model0 (row_size : int) : row model = Row (List.init row_size (fun _ -> Any))
 let env_model0 = row_model0 0
 
-let model_asd : [`Cell | `Token] asd =
-  Mymap.empty
-  |> Mymap.add `Cell
-       ["Nil", [];
-        "Any", [];
-        "Factor", [`Cell; `Token; `Cell];
-        "Alt", [`Cell; `Cell]]
-  |> Mymap.add `Token
-       ["Const", [];
-        "Regex", [];
-        "Expr", [];
-        "Alt", [`Token; `Token]]
+type model_asd_type = [`Row of int (* nb rows *) | `Cell | `Token]
+               
+let model_asd : model_asd_type asd =
+  let row_prods k =
+    ["Row", List.init k (fun _ -> `Cell)] in
+  let cell_prods =
+    ["Nil", [];
+     "Any", [];
+     "Factor", [`Cell; `Token; `Cell];
+     "Alt", [`Cell; `Cell]] in
+  let token_prods =
+    ["Const", [];
+     "Regex", [];
+     "Expr", [];
+     "Alt", [`Token; `Token]]
+  in
+  ASD (function
+      | `Row k -> row_prods k
+      | `Cell -> cell_prods
+      | `Token -> token_prods)
 
+let rec model_asd_type : type a. a model -> model_asd_type =
+  function
+  | Row lm -> `Row (List.length lm)
+  | Empty -> `Cell
+  | Nil -> `Cell
+  | Any -> `Cell
+  | Factor _ -> `Cell
+  | Alt (c1,c2) -> model_asd_type c1
+  | Const _ -> `Token
+  | Regex _ -> `Token
+  | Expr _ -> `Token
   
 type _ data =
   | DRow : cell data list -> row data
@@ -690,13 +709,11 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
   fun ~nb_env_paths m ->
   match m with
   | Row lm ->
-     1, (* not relevant *)
-     Mdl.sum lm
-       (fun mi ->
-         let n, dl_leaves = dl_model_aux2 ~nb_env_paths mi in
-         Mdl.Code.universal_int_star n (* size of the cell model *)
-         +. dl_model_ast `Cell n (* choice of the n-length model tree structure *)
-         +. dl_leaves) (* encoding of model leaves *)
+     List.fold_left
+       (fun (n,dl) m_i ->
+         let n_i, dl_i = dl_model_aux2 ~nb_env_paths m_i in
+         n + n_i, dl +. dl_i)
+       (1,0.) lm
   | Empty -> assert false
   | Nil -> 1, 0.
   | Any -> 1, 0.
@@ -729,9 +746,10 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
        e
 
 let dl_model ~(nb_env_paths : int) (m : 'a model) : dl =
-  let n, dl = dl_model_aux2 ~nb_env_paths m in
-  Mdl.Code.universal_int_plus n (* encoding total nb of symbols *)
-  +. dl
+  let n, dl_leaves = dl_model_aux2 ~nb_env_paths m in
+  Mdl.Code.universal_int_plus n (* encoding model size *)
+  +. dl_model_ast (model_asd_type m) n (* encoding model AST *)
+  +. dl_leaves (* encoding model leaves *)
 
   
 type 'a encoder = 'a -> dl

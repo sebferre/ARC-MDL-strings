@@ -123,9 +123,9 @@ let dl_compare (dl1 : float) (dl2 : float) =
   else 1 [@@inline]
 
 
-type 't asd = ('t, (string * 't list) list) Mymap.t
+type 't asd = ASD of ('t -> (string * 't list) list)
     
-let make_dl_ast (asd : 't asd)
+let make_dl_ast (ASD asd : 't asd)
     : 't (* AST type *) -> int (* AST size *) -> dl (* dl of ASTs of that size *) =
   let tab : ('t * int, float) Hashtbl.t = Hashtbl.create 1013 in
   let rec aux (t : 't) (n : int) : float =
@@ -133,24 +133,22 @@ let make_dl_ast (asd : 't asd)
     match Hashtbl.find_opt tab (t,n) with
     | Some card -> card
     | None ->
-       (match Mymap.find_opt t asd with
-        | None -> invalid_arg "Utilities.make_dl_ast: undefined ASD type"
-        | Some prods ->
-           let card =
-             List.fold_left (* sum over productions *)
-               (fun res (_name, args) ->
-                 let card_prod =
-                   if args = [] then (* leaf node *)
-                     if n = 1 then 1. else 0.
-                   else (* internal node *)
-                     if n > 1
-                     then sum_conv (List.map aux args) (n-1)
-                     else 0. in
-                 res +. card_prod)
-               0. prods
-           in
-           Hashtbl.add tab (t,n) card;
-           card)
+       let prods = asd t in
+       let card =
+         List.fold_left (* sum over productions *)
+           (fun res (_name, args) ->
+             let card_prod =
+               if args = [] then (* leaf node *)
+                 if n = 1 then 1. else 0.
+               else (* internal node *)
+                 if n > 1
+                 then sum_conv (List.map aux args) (n-1)
+                 else 0. in
+             res +. card_prod)
+           0. prods
+       in
+       Hashtbl.add tab (t,n) card;
+       card
   in
   fun t n ->
   let card = aux t n in

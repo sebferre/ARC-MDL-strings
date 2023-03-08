@@ -144,12 +144,13 @@ type 'var expr =
   ]
 
 let expr_asd : [`Expr] asd =
-  Mymap.empty
-  |> Mymap.add `Expr
-       ["Ref", [];
-        "Unary", [`Expr];
-        "Binary", [`Expr; `Expr]]
-(* Arg and Fun left for future work *)
+  let expr_prods =
+    ["Ref", [];
+     "Unary", [`Expr];
+     "Binary", [`Expr; `Expr]]
+      (* Arg and Fun left for future work *)
+  in
+  ASD (function `Expr -> expr_prods)
   
 let rec xp_expr (xp_var : 'var Xprint.xp) (print : Xprint.t) : 'var expr -> unit = function
   | `Ref p -> xp_var print p
