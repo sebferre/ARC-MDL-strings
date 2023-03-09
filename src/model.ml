@@ -333,7 +333,7 @@ let rec xp_data : type a. ?prio_ctx:int -> Xprint.t -> a data -> unit =
      xp_brackets_prio ~prio_ctx ~prio:1 print
        (fun print ->
          print#string "<div class=\"data-opt\">ε</div>")
-  | DAlt (b,c) -> (* TODO: find better repr than 1/2: to indicate valid branch *)
+  | DAlt (b,c) ->
      xp_brackets_prio ~prio_ctx ~prio:2 print
        (fun print ->
          print#string "<div class=\"data-alt\">";
@@ -348,7 +348,7 @@ let pp_data : type a. a data -> unit = fun d -> Xprint.to_stdout xp_data d
 let string_of_data : type a. a data -> string = fun d -> Xprint.to_string xp_data d
 
                        
-(* get and apply *)
+(* bindings and eval *)
 
 let rec contents_of_data : type a. a data -> string = function
   | DRow _ -> assert false
@@ -373,7 +373,7 @@ let rec data_length : type a. a data -> int = function
   | DAlt (_,c) -> data_length c
   | DToken s -> String.length s
 
-let rec find : type a. a path -> a data -> Expr.value result =
+let rec find : type a. a path -> a data -> Expr.value result = (* not used *)
   fun p d ->
   match p, d with
   | This, _ -> Result.Ok (`String (contents_of_data d))
@@ -436,7 +436,7 @@ let eval_expr_on_bindings e bindings =
       | None -> Result.Ok `Null)
     e
 
-let apply_cond_model (b : cond_model) (bindings : bindings) : cond_model result =
+let eval_cond_model (b : cond_model) (bindings : bindings) : cond_model result =
   match b with
   | Undet -> Result.Ok Undet
   | True -> Result.Ok True
@@ -446,30 +446,30 @@ let apply_cond_model (b : cond_model) (bindings : bindings) : cond_model result 
      (match v with
       | `Bool b -> Result.Ok (if b then True else False)
       | `Null -> Result.Ok False
-      | _ -> Result.Error (Invalid_argument "Model.apply_cond_model: bool expected as expression value"))
+      | _ -> Result.Error (Invalid_argument "Model.eval_cond_model: bool expected as expression value"))
 
 exception NullExpr (* error for expressions that contains a null value *)
 
-let rec apply : type a. a model -> bindings -> a model result =
+let rec eval_model : type a. a model -> bindings -> a model result =
   fun m bindings ->
   match m with
   | Row lm ->
      let| lm' =
        list_map_result
-         (fun m -> apply m bindings)
+         (fun m -> eval_model m bindings)
          lm in
      Result.Ok (Row lm')
   | Nil -> Result.Ok Nil
   | Any -> Result.Ok Any
   | Factor (l,t,r) ->
-     let| l' = apply l bindings in
-     let| t' = apply t bindings in
-     let| r' = apply r bindings in
+     let| l' = eval_model l bindings in
+     let| t' = eval_model t bindings in
+     let| r' = eval_model r bindings in
      Result.Ok (Factor (l',t',r'))
   | Alt (b,c1,c2) ->
-     let| b' = apply_cond_model b bindings in
-     let res1 = apply c1 bindings in
-     let res2 = apply c2 bindings in
+     let| b' = eval_cond_model b bindings in
+     let res1 = eval_model c1 bindings in
+     let res2 = eval_model c2 bindings in
      (match res1, res2 with
       | Result.Ok c1', Result.Ok c2' -> Result.Ok (Alt (b', c1', c2'))
       | Result.Error NullExpr, Result.Ok c2' -> Result.Ok (Alt (False, c1, c2'))
@@ -804,28 +804,28 @@ let dl_cond_model ~nb_env_paths (b : cond_model) : dl =
                   
 let dl_model_ast = make_dl_ast model_asd
 
-let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) * dl =
+let rec dl_model_aux : type a. nb_env_paths: int -> a model -> int (* size *) * dl =
   fun ~nb_env_paths m ->
   match m with
   | Row lm ->
      List.fold_left
        (fun (n,dl) m_i ->
-         let n_i, dl_i = dl_model_aux2 ~nb_env_paths m_i in
+         let n_i, dl_i = dl_model_aux ~nb_env_paths m_i in
          n + n_i, dl +. dl_i)
        (1,0.) lm
   | Nil -> 1, 0.
   | Any -> 1, 0.
   | Factor (l,t,r) ->
-     let n_l, dl_l = dl_model_aux2 ~nb_env_paths l in
-     let n_t, dl_t = dl_model_aux2 ~nb_env_paths t in
-     let n_r, dl_r = dl_model_aux2 ~nb_env_paths r in
+     let n_l, dl_l = dl_model_aux ~nb_env_paths l in
+     let n_t, dl_t = dl_model_aux ~nb_env_paths t in
+     let n_r, dl_r = dl_model_aux ~nb_env_paths r in
      1 + n_l + n_t + n_r, (* one symbol for Factor *)
      dl_l +. dl_t +. dl_r
-  | Alt (True,c1,_) -> dl_model_aux2 ~nb_env_paths c1
-  | Alt (False,_,c2) -> dl_model_aux2 ~nb_env_paths c2
+  | Alt (True,c1,_) -> dl_model_aux ~nb_env_paths c1
+  | Alt (False,_,c2) -> dl_model_aux ~nb_env_paths c2
   | Alt (b,c1,c2) ->
-     let n_1, dl_1 = dl_model_aux2 ~nb_env_paths c1 in
-     let n_2, dl_2 = dl_model_aux2 ~nb_env_paths c2 in
+     let n_1, dl_1 = dl_model_aux ~nb_env_paths c1 in
+     let n_2, dl_2 = dl_model_aux ~nb_env_paths c2 in
      1 + n_1 + n_2, (* 1 symbol for Alt *)
      dl_cond_model ~nb_env_paths b +. dl_1 +. dl_2
   | Const s ->
@@ -840,7 +840,7 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
      dl_expr ~nb_env_paths e
 
 let dl_model ~(nb_env_paths : int) (m : 'a model) : dl =
-  let n, dl_leaves = dl_model_aux2 ~nb_env_paths m in
+  let n, dl_leaves = dl_model_aux ~nb_env_paths m in
   Mdl.Code.universal_int_plus n (* encoding model size *)
   +. dl_model_ast (model_asd_type m) n (* encoding model AST *)
   +. dl_leaves (* encoding model leaves *)
@@ -971,7 +971,7 @@ let read ?(dl_assuming_contents_known = false) ~(env : env) ~(bindings : binding
       (m0 : row model) (ls : string list) : row read list result =
   Common.prof "Model.read" (fun () ->
   let index = lazy (Expr.make_index bindings) in
-  let| m = apply m0 bindings in (* reducing expressions *)
+  let| m = eval_model m0 bindings in (* reducing expressions *)
   let parses =
     let* data, () = parse RowParsing m ls in
     let dl = (* QUICK *)
@@ -1016,7 +1016,7 @@ type reads =
 (* writing *)
 
 let write ~(bindings : bindings) (m : row model) : (string list, exn) Result.t = Common.prof "Model.write_doc" (fun () ->
-  let| m' = apply m bindings in
+  let| m' = eval_model m bindings in
   let d = generate m' in
   let ls = contents_of_row_data d in
   Result.Ok ls)
