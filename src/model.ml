@@ -85,8 +85,7 @@ let cond_model_asd : [`Cond] asd =
 
   
 type _ model =
-  | Empty : _ model (* empty language *)
-  | Alt : cond_model * 'a model * 'a model -> 'a model (* Opt c = Alt (CAny, c, Nil) *)
+  | Alt : cond_model * 'a model * 'a model -> 'a model
   (* row *)
   | Row : cell model list -> row model
   (* cell *)
@@ -107,8 +106,7 @@ let model_asd : model_asd_type asd =
   let row_prods k =
     ["Row", List.init k (fun _ -> `Cell)] in
   let cell_prods =
-    [(* "Empty", []; *) (* Empty entails Alt reduction *)
-     "Nil", [];
+    ["Nil", [];
      "Any", [];
      "Factor", [`Cell; `Token; `Cell];
      "Alt", [`Cell; `Cell]] in
@@ -126,7 +124,6 @@ let model_asd : model_asd_type asd =
 let rec model_asd_type : type a. a model -> model_asd_type =
   function
   | Row lm -> `Row (List.length lm)
-  | Empty -> `Cell
   | Nil -> `Cell
   | Any -> `Cell
   | Factor _ -> `Cell
@@ -228,7 +225,6 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
          ctx |> Option.iter (fun ctx -> xp_row_path print (ctx (Col (i,This))); print#string "&nbsp;");
          xp_model ~prio_ctx print ?ctx:ctx_cell m)
        lm
-  | Empty -> print#string "∅"
   | Nil -> ()
   | Any -> print#string "<span class=\"model-any\">*</span>"
   | Factor (l,t,r) ->
@@ -463,7 +459,6 @@ let rec apply : type a. a model -> bindings -> a model result =
          (fun m -> apply m bindings)
          lm in
      Result.Ok (Row lm')
-  | Empty -> Result.Ok Empty
   | Nil -> Result.Ok Nil
   | Any -> Result.Ok Any
   | Factor (l,t,r) ->
@@ -477,8 +472,8 @@ let rec apply : type a. a model -> bindings -> a model result =
      let res2 = apply c2 bindings in
      (match res1, res2 with
       | Result.Ok c1', Result.Ok c2' -> Result.Ok (Alt (b', c1', c2'))
-      | Result.Error NullExpr, Result.Ok c2' -> Result.Ok (Alt (b', Empty, c2'))
-      | Result.Ok c1', Result.Error NullExpr -> Result.Ok (Alt (b', c1', Empty))
+      | Result.Error NullExpr, Result.Ok c2' -> Result.Ok (Alt (False, c1, c2'))
+      | Result.Ok c1', Result.Error NullExpr -> Result.Ok (Alt (True, c1', c2))
       | _ (* all errors *) -> res1)
   | Const s -> Result.Ok (Const s)
   | Regex re -> Result.Ok (Regex re)
@@ -505,18 +500,15 @@ let regex_generate : regex_model -> string = function
 
 let rec generate : type a. a model -> a data = function
   | Row lm -> DRow (List.map generate lm)
-  | Empty -> assert false
   | Nil -> DNil
   | Any -> DAny "_"
   | Factor (l,t,r) -> DFactor (generate l, generate t, generate r)
   | Alt (b,c1,c2) -> (* TODO: make stochastic ? *)
      let db, c =
        match b, c1, c2 with
+       | Undet, _, _ -> true, c1 (* default choice *)
        | True, _, _ -> true, c1
        | False, _, _ -> false, c2
-       | Undet, Empty, _ -> false, c2
-       | Undet, _, Empty -> true, c1
-       | Undet, _, _ -> true, c1 (* default choice *)
        | BoolExpr _, _, _ -> assert false in
      DAlt (db, generate c)
   | Const s -> DToken s
@@ -635,7 +627,6 @@ let rec parse : type a c b. (a,c,b) parsing -> a model -> (c, a data * b) parseu
               Myseq.return d)
             lm ls) in
      Myseq.return (DRow ld, ())
-  | _, Empty, _ -> Myseq.empty
   | CellParsing, Nil, s ->
      if s = ""
      then Myseq.return (DNil, ())
@@ -664,10 +655,10 @@ let rec parse : type a c b. (a,c,b) parsing -> a model -> (c, a data * b) parseu
          else seq1 (* TODO: should be concat seq1 seq2 ? *)
       | True -> seq1
       | False -> seq2
-      | BoolExpr _ -> assert false)
+      | BoolExpr _ -> (fun () -> assert false))
   | TokenParsing, Const cst, s -> token_parse (`String cst) s
   | TokenParsing, Regex rm, s -> token_parse (`Regex_model rm) s
-  | _, Expr _, _ -> assert false
+  | _, Expr _, _ -> (fun () -> assert false)
 
 
 (* description lengths *)
@@ -773,7 +764,6 @@ let rec dl_model_env_stats : type a. a model -> int = function
      List.fold_left
        (fun res m -> res + (* 1 + *) dl_model_env_stats m) (* a ref for full cells => too uncertain*)
        0 lm
-  | Empty -> 0
   | Nil -> 0
   | Any -> 0
   | Factor (l,t,r) ->
@@ -823,7 +813,6 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
          let n_i, dl_i = dl_model_aux2 ~nb_env_paths m_i in
          n + n_i, dl +. dl_i)
        (1,0.) lm
-  | Empty -> assert false (* TODO: remove Empty from model by using True/False cond? *)
   | Nil -> 1, 0.
   | Any -> 1, 0.
   | Factor (l,t,r) ->
@@ -834,8 +823,6 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
      dl_l +. dl_t +. dl_r
   | Alt (True,c1,_) -> dl_model_aux2 ~nb_env_paths c1
   | Alt (False,_,c2) -> dl_model_aux2 ~nb_env_paths c2
-  | Alt (_,c1,Empty) -> dl_model_aux2 ~nb_env_paths c1
-  | Alt (_,Empty,c2) -> dl_model_aux2 ~nb_env_paths c2
   | Alt (b,c1,c2) ->
      let n_1, dl_1 = dl_model_aux2 ~nb_env_paths c1 in
      let n_2, dl_2 = dl_model_aux2 ~nb_env_paths c2 in
@@ -863,7 +850,6 @@ type 'a encoder = 'a -> dl
 
 let rec encoder_range : type a. a model -> Range.t = function  (* min-max length range for doc_models *)
   | Row _ -> assert false
-  | Empty -> assert false
   | Nil -> Range.make_exact 0
   | Any -> Range.make_open 0
   | Factor (l,t,r) ->
@@ -873,9 +859,6 @@ let rec encoder_range : type a. a model -> Range.t = function  (* min-max length
      Range.sum [range_l; range_t; range_r]
   | Alt (True,c1,_) -> encoder_range c1
   | Alt (False,_,c2) -> encoder_range c2
-  | Alt (_,Empty,Empty) -> assert false
-  | Alt (_,c1,Empty) -> encoder_range c1
-  | Alt (_,Empty,c2) -> encoder_range c2
   | Alt (_,c1,c2) ->
      let range_c1 = encoder_range c1 in
      let range_c2 = encoder_range c2 in
@@ -897,8 +880,6 @@ let rec encoder : type a. a model -> a data encoder = function
              +. enc_m d)
            0. l_enc_m ld
       | _ -> assert false)
-  | Empty ->
-     (function _ -> assert false)
   | Nil ->
      (function
       | DNil | DAny "" -> 0. (* TODO: why DAny "" required here? *)
@@ -944,9 +925,8 @@ let rec encoder : type a. a model -> a data encoder = function
       | _ -> assert false)
   | Alt (b,c1,c2) ->
      let dl_choice1, dl_choice2 =
-       match b, c1, c2 with
-       | (True | False | BoolExpr _), _, _
-         | _, Empty, _ | _, _, Empty -> 0., 0. (* no choice to be made *)
+       match b with
+       | (True | False | BoolExpr _) -> 0., 0. (* no choice to be made *)
        | _ -> Mdl.Code.usage 0.6, Mdl.Code.usage 0.4 in (* favoring fst alternative *)
      let enc_c1 = encoder c1 in
      let enc_c2 = encoder c2 in
@@ -1224,7 +1204,6 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
               refinements_aux ~nb_env_paths ~dl_M m m_reads other_reads_env
               |> Myseq.map (fun (p,r,supp,dl') -> (Col (i,p), r, supp, dl')))
             lm)
-    | Empty -> Myseq.empty
     | Nil -> Myseq.empty
     | Any ->
        local_refinements ~nb_env_paths ~dl_M m selected_reads
@@ -1459,7 +1438,6 @@ let rec prune_refinements : type a. a model -> (a path * refinement) Myseq.t = f
             let* p, r = prune_refinements m in
             Myseq.return (Col (i,p), r))
           lm)
-  | Empty -> Myseq.empty
   | Nil -> Myseq.empty
   | Any -> Myseq.empty
   | Factor (l,t,r) ->
