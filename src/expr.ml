@@ -16,6 +16,7 @@ type value =
   [ `Null (* undefined, missing value *)
   | `String of string
   | `Int of int
+  | `Bool of bool
   | `Date of date
   | `Time of time
   | `List of value list

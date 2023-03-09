@@ -183,9 +183,9 @@ let xml_of_focus focus =
                       | Prune -> "pruning stage"))];
       [Syntax.Kwd (Printf.sprintf "DL = %f" focus.norm_dl)];
       [Syntax.Kwd (Printf.sprintf "DL = %.3f = %.3fm + %.3fd = (%.3fmi + %.3fmo) + (%.3fdi + %.3fdo) = %.3fi + %.3fo" md m d mi mo di do_ mdi mdo)];
-      [Syntax.Kwd (Model.string_of_model focus.model.input_model)];
+      [Syntax.Kwd (Model.string_of_model ~ctx:Model.ctx0 focus.model.input_model)];
       [Syntax.Kwd " ➜ "];
-      [Syntax.Kwd (Model.string_of_model focus.model.output_model)]]]
+      [Syntax.Kwd (Model.string_of_model ~ctx:Model.ctx0 focus.model.output_model)]]]
   
 let html_of_word (w : arc_word) : Html.t = assert false
 

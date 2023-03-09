@@ -29,6 +29,7 @@ type _ path =
   | Left : cell path -> cell path
   | Middle : token path -> cell path
   | Right : cell path -> cell path
+  | Cond : _ path
   | Branch : bool * 'a path -> 'a path
 
 type 'a ctx = 'a path -> row path
@@ -67,13 +68,32 @@ let special_consts =
     (* brackets *)
     "("; ")"; "["; "]"; "{"; "}" ]
 
+type cond_model =
+  | Undet (* undetermined condition *)
+  | True (* always true condition *)
+  | False (* always false condition *)
+  | BoolExpr of expr (* computed condition *)
+  
+let cond_model_asd : [`Cond] asd =
+  let cond_prods =
+    ["Undet", [];
+     (* "True", [];
+     "False", []; *) (* True/False entails Alt reduction to one branch *)
+     "BoolExpr", []]
+  in
+  ASD (function `Cond -> cond_prods)
+
+  
 type _ model =
-  | Row : cell model list -> row model
   | Empty : _ model (* empty language *)
+  | Alt : cond_model * 'a model * 'a model -> 'a model (* Opt c = Alt (CAny, c, Nil) *)
+  (* row *)
+  | Row : cell model list -> row model
+  (* cell *)
   | Nil : cell model (* epsilon *)
   | Any : cell model
   | Factor : cell model * token model * cell model -> cell model
-  | Alt : 'a model * 'a model -> 'a model (* Opt c = Alt (c,Nil) *)
+  (* token *)
   | Const : string -> token model
   | Regex : regex_model -> token model
   | Expr : expr -> token model
@@ -87,7 +107,8 @@ let model_asd : model_asd_type asd =
   let row_prods k =
     ["Row", List.init k (fun _ -> `Cell)] in
   let cell_prods =
-    ["Nil", [];
+    [(* "Empty", []; *) (* Empty entails Alt reduction *)
+     "Nil", [];
      "Any", [];
      "Factor", [`Cell; `Token; `Cell];
      "Alt", [`Cell; `Cell]] in
@@ -109,7 +130,7 @@ let rec model_asd_type : type a. a model -> model_asd_type =
   | Nil -> `Cell
   | Any -> `Cell
   | Factor _ -> `Cell
-  | Alt (c1,c2) -> model_asd_type c1
+  | Alt (b,c1,c2) -> model_asd_type c1
   | Const _ -> `Token
   | Regex _ -> `Token
   | Expr _ -> `Token
@@ -152,6 +173,9 @@ let rec id_of_path : type a. ?power2:int -> ?acc:int -> a path -> string =
   | Left p1 -> id_of_path ~power2:(2 * power2) ~acc p1
   | Right p1 -> id_of_path ~power2:(2 * power2) ~acc:(power2 + acc) p1
   | Middle p1 -> id_of_path ~power2 ~acc p1
+  | Cond ->
+     let id = power2 + acc in
+     string_of_int id ^ "?"
   | Branch (b,p1) -> id_of_path ~power2:(2 * power2) ~acc:(if b then acc else power2 + acc) p1
   
 let xp_row_path (print : Xprint.t) (p : row path) =
@@ -167,13 +191,31 @@ let xp_brackets_prio ~prio_ctx ~prio print xp =
   else xp_brackets print xp
 
 let xp_regex_model print = function
-  | Content -> xp_string print "Content"
-  | Word -> xp_string print "Word"
-  | Letters -> xp_string print "Letters"
-  | Decimal -> xp_string print "Decimal"
-  | Digits -> xp_string print "Digits"
-  | Separators -> xp_string print "Separators"
-  | Spaces -> xp_string print "Spaces"
+  | Content -> print#string "Content"
+  | Word -> print#string "Word"
+  | Letters -> print#string "Letters"
+  | Decimal -> print#string "Decimal"
+  | Digits -> print#string "Digits"
+  | Separators -> print#string "Separators"
+  | Spaces -> print#string "Spaces"
+
+let xp_cond_model print = function
+  | Undet ->
+     print#string "?"
+  | True ->
+     print#string "true"
+  | False ->
+     print#string "false"
+  | BoolExpr e ->
+     print#string "<span class=\"model-expr\">";
+     Expr.xp_expr xp_row_path print e;
+     print#string "</span>"
+
+let xp_path : type a. Xprint.t -> ?ctx:(a ctx) -> a path -> unit =
+  fun print ?ctx p1 ->
+  ctx
+  |> Option.map (fun ctx -> ctx p1)
+  |> Option.iter (fun p -> xp_row_path print p; print#string ": ")
 
 let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model -> unit =
   fun ?(prio_ctx = 2) print ?ctx m ->
@@ -200,36 +242,55 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
          xp_model ~prio_ctx:0 print ?ctx:ctx_t t;
          xp_model ~prio_ctx:0 print ?ctx:ctx_r r;
          print#string "</div>")
-  | Alt (c, Nil) (* Opt c *) ->
+  | Alt (Undet, c, Nil) (* c1 ? *) ->
      let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
      xp_brackets_prio ~prio_ctx ~prio:1 print
        (fun print ->
-         print#string "<div class=\"model-opt\">";
+         print#string "<div class=\"model-alt\">";
+         xp_path print ?ctx Cond;
+         (*p_b_opt |> Option.iter (fun p -> xp_row_path print p; print#string ": ");*)
          xp_model ~prio_ctx:1 print ?ctx:ctx_1 c;
          print#string " <span class=\"model-meta-operator\">?</span>";
          print#string "</div>")
-  | Alt (Nil, c) (* Opt c *) ->
-     let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (false, p)))) in     
-     xp_brackets_prio ~prio_ctx ~prio:1 print
-       (fun print ->
-         print#string "<div class=\"model-opt\">";
-         xp_model ~prio_ctx:1 print ?ctx:ctx_2 c;
-         print#string " <span class=\"model-meta-operator\">?</span>";
-         print#string "</div>")
-  | Alt (c1,c2) ->
+  | Alt (Undet,c1,c2) -> (* c1 | c2 *)
      let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
      let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (false, p)))) in
      xp_brackets_prio ~prio_ctx ~prio:2 print
        (fun print ->
          print#string "<div class=\"model-alt\">";
+         xp_path print ?ctx Cond;
          xp_model ~prio_ctx:2 print ?ctx:ctx_1 c1;
          print#string " <span class=\"model-meta-operator\">|</span> ";
          xp_model ~prio_ctx:2 print ?ctx:ctx_2 c2;
          print#string "</div>")
+  | Alt (b,c1,Nil) -> (* if b then c1 *)
+     let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
+     xp_brackets_prio ~prio_ctx ~prio:2 print
+       (fun print ->
+         print#string "<div class=\"model-alt\">";
+         xp_path print ?ctx Cond;
+         print#string "<span class=\"model-meta-operator\">if</span> ";
+         xp_cond_model print b;
+         print#string " <span class=\"model-meta-operator\">then</span> ";
+         xp_model ~prio_ctx:2 print ?ctx:ctx_1 c1;
+         print#string "</div>")     
+  | Alt (b,c1,c2) -> (* if b then c1 else c2 *)
+     let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
+     let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (false, p)))) in
+     xp_brackets_prio ~prio_ctx ~prio:2 print
+       (fun print ->
+         print#string "<div class=\"model-alt\">";
+         xp_path print ?ctx Cond;
+         print#string "<span class=\"model-meta-operator\">if</span> ";
+         xp_cond_model print b;
+         print#string " <span class=\"model-meta-operator\">then</span> ";
+         xp_model ~prio_ctx:2 print ?ctx:ctx_1 c1;
+         print#string " <span class=\"model-meta-operator\">else</span> ";
+         xp_model ~prio_ctx:2 print ?ctx:ctx_2 c2;
+         print#string "</div>")     
   | Const s ->
      let p_opt = ctx |> Option.map (fun ctx -> ctx This) in
      print#string "<span class=\"model-const\"";
-     (*     p_opt |> Option.iter (fun p -> xp_row_path print p; print#string ": "); *)
      p_opt |> Option.iter (* print path as tooltip *)
                 (fun p ->
                   print#string " title=\"";
@@ -239,17 +300,16 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
      xp_string print s;
      print#string "</span>"
   | Regex re ->
-     let p_opt = ctx |> Option.map (fun ctx -> ctx This) in
      print#string "<span class=\"model-regex\">";
-     p_opt |> Option.iter (fun p -> xp_row_path print p; print#string ": ");
+     xp_path print ?ctx This;
      xp_regex_model print re;
      print#string "</span>"
   | Expr e ->
      print#string "<span class=\"model-expr\">";
      Expr.xp_expr xp_row_path print e;
      print#string "</span>"
-let pp_model m = Xprint.to_stdout (xp_model ~ctx:ctx0) m
-let string_of_model m = Xprint.to_string (xp_model ~ctx:ctx0) m
+let pp_model : type a. ctx:(a ctx) -> a model -> unit = fun ~ctx m -> Xprint.to_stdout (xp_model ~ctx) m
+let string_of_model : type a. ctx:(a ctx) -> a model -> string = fun ~ctx m -> Xprint.to_string (xp_model ~ctx) m
                     
 let rec xp_data : type a. ?prio_ctx:int -> Xprint.t -> a data -> unit =
   fun ?(prio_ctx = 0) print d ->
@@ -288,7 +348,7 @@ let rec xp_data : type a. ?prio_ctx:int -> Xprint.t -> a data -> unit =
      print#string "<span class=\"data-token\">";
      xp_string print s;
      print#string "</span>"
-let pp_data = Xprint.to_stdout xp_data
+let pp_data : type a. a data -> unit = fun d -> Xprint.to_stdout xp_data d
 let string_of_data : type a. a data -> string = fun d -> Xprint.to_string xp_data d
 
                        
@@ -327,6 +387,7 @@ let rec find : type a. a path -> a data -> Expr.value result =
   | Left p1, DFactor (l,_,_) -> find p1 l
   | Middle p1, DFactor (_,t,_) -> find p1 t
   | Right p1, DFactor (_,_,r) -> find p1 r
+  | Cond, DAlt (b,c) -> Result.Ok (`Bool b)
   | Branch (b,p1), DAlt (b',c) when b = b' -> find p1 c
   | _ -> Result.Ok `Null
 
@@ -354,10 +415,10 @@ let rec get_bindings_aux : type a. a ctx -> a model -> a data -> bindings -> bin
      let acc = get_bindings_aux (fun p -> ctx (Left p)) l dl acc in
      let acc = get_bindings_aux (fun p -> ctx (Middle p)) t dt acc in
      acc
-  | Alt (c1,c2), DAlt (b,dc) ->
-     let c = if b then c1 else c2 in
-     let acc = get_bindings_aux (fun p -> ctx (Branch (b,p))) c dc acc in
-     acc
+  | Alt (_,c1,c2), DAlt (db,dc) ->
+     let c = if db then c1 else c2 in
+     let acc = get_bindings_aux (fun p -> ctx (Branch (db,p))) c dc acc in
+     (ctx Cond, `Bool db) :: acc
   | _, DToken s ->
      if List.mem s special_consts
         || List.exists (fun re -> regexp_match_full re s) [re_separators; re_spaces]
@@ -378,7 +439,19 @@ let eval_expr_on_bindings e bindings =
       | Some v -> Result.Ok v
       | None -> Result.Ok `Null)
     e
-  
+
+let apply_cond_model (b : cond_model) (bindings : bindings) : cond_model result =
+  match b with
+  | Undet -> Result.Ok Undet
+  | True -> Result.Ok True
+  | False -> Result.Ok False
+  | BoolExpr e ->
+     let| v = eval_expr_on_bindings e bindings in
+     (match v with
+      | `Bool b -> Result.Ok (if b then True else False)
+      | `Null -> Result.Ok False
+      | _ -> Result.Error (Invalid_argument "Model.apply_cond_model: bool expected as expression value"))
+
 exception NullExpr (* error for expressions that contains a null value *)
 
 let rec apply : type a. a model -> bindings -> a model result =
@@ -398,14 +471,15 @@ let rec apply : type a. a model -> bindings -> a model result =
      let| t' = apply t bindings in
      let| r' = apply r bindings in
      Result.Ok (Factor (l',t',r'))
-  | Alt (c1,c2) ->
+  | Alt (b,c1,c2) ->
+     let| b' = apply_cond_model b bindings in
      let res1 = apply c1 bindings in
      let res2 = apply c2 bindings in
      (match res1, res2 with
-      | Result.Ok c1', Result.Ok c2' -> Result.Ok (Alt (c1', c2'))
-      | Result.Error NullExpr, Result.Ok c2' -> Result.Ok (Alt (Empty, c2'))
-      | Result.Ok c1', Result.Error NullExpr -> Result.Ok (Alt (c1', Empty))
-      | _ -> res1)
+      | Result.Ok c1', Result.Ok c2' -> Result.Ok (Alt (b', c1', c2'))
+      | Result.Error NullExpr, Result.Ok c2' -> Result.Ok (Alt (b', Empty, c2'))
+      | Result.Ok c1', Result.Error NullExpr -> Result.Ok (Alt (b', c1', Empty))
+      | _ (* all errors *) -> res1)
   | Const s -> Result.Ok (Const s)
   | Regex re -> Result.Ok (Regex re)
   | Expr e ->
@@ -435,14 +509,19 @@ let rec generate : type a. a model -> a data = function
   | Nil -> DNil
   | Any -> DAny "_"
   | Factor (l,t,r) -> DFactor (generate l, generate t, generate r)
-  | Alt (c1,c2) -> (* TODO: make stochastic ? *)
-     if c1 <> Empty then DAlt (true, generate c1)
-     else if c2 <> Empty then DAlt (false, generate c2)
-     else assert false
+  | Alt (b,c1,c2) -> (* TODO: make stochastic ? *)
+     let db, c =
+       match b, c1, c2 with
+       | True, _, _ -> true, c1
+       | False, _, _ -> false, c2
+       | Undet, Empty, _ -> false, c2
+       | Undet, _, Empty -> true, c1
+       | Undet, _, _ -> true, c1 (* default choice *)
+       | BoolExpr _, _, _ -> assert false in
+     DAlt (db, generate c)
   | Const s -> DToken s
   | Regex re -> DToken (regex_generate re)
   | Expr _ -> assert false
-
 
 (* parse *)
 
@@ -571,15 +650,21 @@ let rec parse : type a c b. (a,c,b) parsing -> a model -> (c, a data * b) parseu
        let* dl, () = parse CellParsing l sl in
        let* dr, () = parse CellParsing r sr in
        Myseq.return (DFactor (dl, dt, dr), ())
-  | _, Alt (c1,c2), _ -> (* exclusive or, like if-then-else *)
-     let seq1 = parse parsing c1 cnt in
-     if Myseq.is_empty seq1
-     then
+  | _, Alt (b,c1,c2), _ -> (* if-then-else *)
+     let seq1 =
+       let* dc1, b1 = parse parsing c1 cnt in
+       Myseq.return (DAlt (true,dc1), b1) in
+     let seq2 =
        let* dc2, b2 = parse parsing c2 cnt in
-       Myseq.return (DAlt (false,dc2), b2)
-     else
-       let* dc1, b1 = seq1 in
-       Myseq.return (DAlt (true,dc1), b1)
+       Myseq.return (DAlt (false,dc2), b2) in
+     (match b with
+      | Undet ->
+         if Myseq.is_empty seq1
+         then seq2
+         else seq1 (* TODO: should be concat seq1 seq2 ? *)
+      | True -> seq1
+      | False -> seq2
+      | BoolExpr _ -> assert false)
   | TokenParsing, Const cst, s -> token_parse (`String cst) s
   | TokenParsing, Regex rm, s -> token_parse (`Regex_model rm) s
   | _, Expr _, _ -> assert false
@@ -695,15 +780,38 @@ let rec dl_model_env_stats : type a. a model -> int = function
      dl_model_env_stats l
      + dl_model_env_stats t
      + dl_model_env_stats r
-  | Alt (c1,c2) ->
-     dl_model_env_stats c1
+  | Alt (b,c1,c2) ->
+     1 (* condition boolean *)
+     + dl_model_env_stats c1
      + dl_model_env_stats c2
   | Const _ -> 1
   | Regex (Content | Word | Letters | Decimal | Digits) -> 1 (* proper text content *)
   | Regex (Separators | Spaces) -> 0 (* not proper content *)
   | Expr _ -> 0 (* exprs in output only *)
 
+let dl_var ~nb_env_paths =
+  fun p ->
+  let k = max 1 nb_env_paths in (* to avoid 0, happens in pruning mode *)
+  Mdl.Code.uniform k
 
+let dl_expr ~nb_env_paths (e : expr) : dl =
+  Expr.dl_expr (dl_var ~nb_env_paths) e
+  
+let dl_cond_model_ast = make_dl_ast cond_model_asd
+
+let dl_cond_model ~nb_env_paths (b : cond_model) : dl =
+  let n, dl_leaves =
+    match b with
+    | Undet -> 1, 0.
+    | True -> assert false
+    | False -> assert false
+    | BoolExpr e -> 1, dl_expr ~nb_env_paths e
+  in
+  Mdl.Code.universal_int_plus n
+  +. dl_cond_model_ast `Cond n
+  +. dl_leaves
+
+                  
 let dl_model_ast = make_dl_ast model_asd
 
 let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) * dl =
@@ -715,7 +823,7 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
          let n_i, dl_i = dl_model_aux2 ~nb_env_paths m_i in
          n + n_i, dl +. dl_i)
        (1,0.) lm
-  | Empty -> assert false
+  | Empty -> assert false (* TODO: remove Empty from model by using True/False cond? *)
   | Nil -> 1, 0.
   | Any -> 1, 0.
   | Factor (l,t,r) ->
@@ -724,13 +832,15 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
      let n_r, dl_r = dl_model_aux2 ~nb_env_paths r in
      1 + n_l + n_t + n_r, (* one symbol for Factor *)
      dl_l +. dl_t +. dl_r
-  | Alt (c1,Empty) -> dl_model_aux2 ~nb_env_paths c1
-  | Alt (Empty,c2) -> dl_model_aux2 ~nb_env_paths c2
-  | Alt (c1,c2) ->
+  | Alt (True,c1,_) -> dl_model_aux2 ~nb_env_paths c1
+  | Alt (False,_,c2) -> dl_model_aux2 ~nb_env_paths c2
+  | Alt (_,c1,Empty) -> dl_model_aux2 ~nb_env_paths c1
+  | Alt (_,Empty,c2) -> dl_model_aux2 ~nb_env_paths c2
+  | Alt (b,c1,c2) ->
      let n_1, dl_1 = dl_model_aux2 ~nb_env_paths c1 in
      let n_2, dl_2 = dl_model_aux2 ~nb_env_paths c2 in
      1 + n_1 + n_2, (* 1 symbol for Alt *)
-     dl_1 +. dl_2
+     dl_cond_model ~nb_env_paths b +. dl_1 +. dl_2
   | Const s ->
      1,
      Mdl.Code.universal_int_plus (String.length s)
@@ -740,11 +850,7 @@ let rec dl_model_aux2 : type a. nb_env_paths: int -> a model -> int (* size *) *
      Mdl.Code.uniform nb_regex
   | Expr e ->
      1,
-     Expr.dl_expr
-       (fun p ->
-         let k = max 1 nb_env_paths in (* to avoid 0, happens in pruning mode *)
-         Mdl.Code.uniform k)
-       e
+     dl_expr ~nb_env_paths e
 
 let dl_model ~(nb_env_paths : int) (m : 'a model) : dl =
   let n, dl_leaves = dl_model_aux2 ~nb_env_paths m in
@@ -765,10 +871,12 @@ let rec encoder_range : type a. a model -> Range.t = function  (* min-max length
      let range_t = encoder_range t in
      let range_r = encoder_range r in
      Range.sum [range_l; range_t; range_r]
-  | Alt (Empty,Empty) -> assert false
-  | Alt (c1,Empty) -> encoder_range c1
-  | Alt (Empty,c2) -> encoder_range c2
-  | Alt (c1,c2) ->
+  | Alt (True,c1,_) -> encoder_range c1
+  | Alt (False,_,c2) -> encoder_range c2
+  | Alt (_,Empty,Empty) -> assert false
+  | Alt (_,c1,Empty) -> encoder_range c1
+  | Alt (_,Empty,c2) -> encoder_range c2
+  | Alt (_,c1,c2) ->
      let range_c1 = encoder_range c1 in
      let range_c2 = encoder_range c2 in
      Range.union range_c1 range_c2
@@ -834,10 +942,11 @@ let rec encoder : type a. a model -> a data encoder = function
          let nl_nt_nr = data_length dl, data_length dt, data_length dr in
          enc_split nl_nt_nr +. enc_l dl +. enc_t dt +. enc_r dr
       | _ -> assert false)
-  | Alt (c1,c2) ->
+  | Alt (b,c1,c2) ->
      let dl_choice1, dl_choice2 =
-       match c1, c2 with
-       | Empty, _ | _, Empty -> 0., 0. (* no choice to be made *)
+       match b, c1, c2 with
+       | (True | False | BoolExpr _), _, _
+         | _, Empty, _ | _, _, Empty -> 0., 0. (* no choice to be made *)
        | _ -> Mdl.Code.usage 0.6, Mdl.Code.usage 0.4 in (* favoring fst alternative *)
      let enc_c1 = encoder c1 in
      let enc_c2 = encoder c2 in
@@ -937,6 +1046,7 @@ let write ~(bindings : bindings) (m : row model) : (string list, exn) Result.t =
 type refinement =
   | RCell of cell model (* cell replacement *)
   | RToken of token model (* token replacement *)
+  | RCond of cond_model (* condition replacement *)
 
 let xp_support (print : Xprint.t) (supp : int) =
   print#string " ("; print#int supp; print#string ")"
@@ -945,6 +1055,7 @@ let xp_refinement (print : Xprint.t) = function
   | RCell Nil -> print#string "<span class=\"model-nil\">ε</span>"
   | RCell cell -> xp_model ~prio_ctx:2 print cell
   | RToken tok -> xp_model ~prio_ctx:2 print tok
+  | RCond cond -> xp_cond_model print cond
 let pp_refinement = Xprint.to_stdout xp_refinement
 
 let rec apply_refinement : type a. refinement -> a path -> a model -> a model =
@@ -960,13 +1071,13 @@ let rec apply_refinement : type a. refinement -> a path -> a model -> a model =
   | Left p1, Factor (l,t,r), _ -> Factor (apply_refinement rf p1 l, t, r)
   | Middle p1, Factor (l, t, r), _ -> Factor (l, apply_refinement rf p1 t, r)
   | Right p1, Factor (l, t, r), _ -> Factor (l, t, apply_refinement rf p1 r)
-  | Branch (true,p1), Alt (c1, c2), _ ->
-     (match apply_refinement rf p1 c1 with
-      | Any -> Any (* absorbs the second branch *)
-      | c1' ->
-         if c1' = c2 then c2 
-         else Alt (c1', c2))
-  | Branch (false,p1), Alt (c1, c2), _ -> Alt (c1, apply_refinement rf p1 c2)
+  | Cond, Alt (_,c1,c2), RCond cond -> Alt (cond, c1, c2)
+  | Branch (true,p1), Alt (b, c1, c2), _ ->
+     (match b, apply_refinement rf p1 c1 with
+      | Undet, Any -> Any (* absorbs the second branch *)
+      | Undet, c1' when c1' = c2 -> c2 
+      | _, c1' -> Alt (b, c1', c2))
+  | Branch (false,p1), Alt (b, c1, c2), _ -> Alt (b, c1, apply_refinement rf p1 c2)
 
   | This, Const _, RToken tok -> tok
   | This, Regex _, RToken tok -> tok
@@ -1047,7 +1158,7 @@ let local_refinements
                 -> a read list list (* local data with read information *)
                 -> (a read -> a data) (* alternative data when a refinement does not apply *)
                 -> (a read -> (r * a data) list) (* refinement information with related new local data *)
-                -> (r -> alt:bool -> (a read * a data) list -> (refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
+                -> (r -> alt:bool -> (a read * a data) list -> (a path * refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
                 -> (a path * refinement * int * dl) Myseq.t (* result: a sequence of path-wise refinements with estimate DL *)
   =
   fun ~nb_env_paths ~dl_M
@@ -1081,7 +1192,7 @@ let local_refinements
                      | Result.Error d -> DAlt (false, d) in
                    read, data')
                  best_reads in
-  let* r, m' = make_r_m' r_info ~alt best_reads in
+  let* p, r, m' = make_r_m' r_info ~alt best_reads in
   let encoder_m' = encoder m' in
   let dl_m' = dl_model ~nb_env_paths m' in
   let dl' =
@@ -1089,7 +1200,7 @@ let local_refinements
     +. !alpha *. Mdl.sum best_reads
                    (fun (read, data') ->
                      read.dl -. encoder_m read.data +. encoder_m' data') in
-  Myseq.return (This, r, supp, dl')     
+  Myseq.return (p, r, supp, dl')     
 
 
 let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a read list list -> env list list -> (a path * refinement * int (* support *) * dl) Myseq.t =
@@ -1177,10 +1288,10 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                | Regex _ when Bintree.cardinal ts = 1 -> Const (Bintree.choose ts)
                | _ -> tm in
              let m' = Factor (l, tm', r) in
-             let m'= if alt then Alt (m', c2) else m' in
+             let m'= if alt then Alt (Undet, m', c2) else m' in
              Myseq.return m' in
         let r = RCell m' in
-        Myseq.return (r,m'))
+        Myseq.return (This,r,m'))
 
     | Factor (l,t,r) ->
        Myseq.concat
@@ -1212,25 +1323,51 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
              other_reads_env
            |> Myseq.map (fun (p,r,supp,dl') -> Right p, r, supp, dl') ]
       
-    | Alt (c1,c2) ->
+    | Alt (b,c1,c2) ->
        Myseq.concat
-         [ (let sel1, other1 =
+         [ (match b with
+            | Undet ->
+               local_refinements ~nb_env_paths ~dl_M m selected_reads
+                 (* r = [`Expr of expr] *)
+                 (fun read -> read.data)
+                 (fun read ->
+                   match read.data with
+                   | DAlt (db,_) as d ->
+                      let es : exprset = Expr.index_lookup (`Bool db) read.index in
+                      Myseq.fold_left
+                        (fun rs e -> (`Expr e, d) :: rs)
+                        [] (Expr.exprset_to_seq es)
+                   | _ -> assert false)
+                 (fun r_info ~alt best_reads ->
+                   if alt
+                   then Myseq.empty
+                   else
+                     let r, m' =
+                       match r_info with
+                       | `Expr e ->
+                          let cond = BoolExpr e in
+                          RCond cond, Alt (cond, c1, c2) in
+                     Myseq.return (Cond,r,m'))
+            | True | False | BoolExpr _ -> Myseq.empty);
+           
+           (let sel1, other1 =
               partition_map_reads
                 (fun read ->
                   match read.data with
-                  | DAlt (b, dc) ->
-                     if b then Result.Ok {read with data = dc} else Result.Error read.env
+                  | DAlt (db, dc) ->
+                     if db then Result.Ok {read with data = dc} else Result.Error read.env
                   | _ -> assert false)
                 selected_reads
                 other_reads_env in
             refinements_aux ~nb_env_paths ~dl_M c1 sel1 other1)
            |> Myseq.map (fun (p,r,supp,dl') -> Branch (true,p), r, supp, dl');
+           
            (let sel2, other2 =
               partition_map_reads
                 (fun read ->
                   match read.data with
-                  | DAlt (b,dc) ->
-                     if not b then Result.Ok {read with data = dc} else Result.Error read.env
+                  | DAlt (db,dc) ->
+                     if not db then Result.Ok {read with data = dc} else Result.Error read.env
                   | _ -> assert false)
                 selected_reads
                 other_reads_env in
@@ -1240,7 +1377,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
     | Const _ ->
        local_refinements ~nb_env_paths ~dl_M m selected_reads
          (* r = [`Expr of expr] *)
-         (fun read -> DToken (contents_of_data read.data))
+         (fun read -> DToken (contents_of_data read.data)) (* TODO: same as read.data ? *)
          (fun read ->
            let s = contents_of_data read.data in
            let rs =
@@ -1253,9 +1390,9 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
            let m' =
              match r_info with
              | `Expr e -> Expr e in
-           let m' = if alt then Alt (m',m) else m' in
+           let m' = if alt then Alt (Undet, m',m) else m' in
            let r = RToken m' in
-           Myseq.return (r,m'))
+           Myseq.return (This,r,m'))
     | Regex rm ->
        let rm'_candidates =
          match rm with
@@ -1295,9 +1432,9 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
               else Myseq.return (Const s)
            | `RE re' -> Myseq.return (Regex re')
            | `Expr e -> Myseq.return (Expr e) in
-         let m' = if alt then Alt (m',m) else m' in
+         let m' = if alt then Alt (Undet, m',m) else m' in
          let r = RToken m' in
-         Myseq.return (r,m'))
+         Myseq.return (This,r,m'))
     | Expr e -> Myseq.empty
      
 let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : (row path * refinement * int (* support *) * dl * row model) Myseq.t =
@@ -1333,9 +1470,12 @@ let rec prune_refinements : type a. a model -> (a path * refinement) Myseq.t = f
          prune_refinements l |> Myseq.map (fun (p,r) -> Left p, r);
          prune_refinements t |> Myseq.map (fun (p,r) -> Middle p, r);
          prune_refinements r |> Myseq.map (fun (p,r) -> Right p, r) ]
-  | Alt (c1,c2) ->
+  | Alt (b,c1,c2) ->
      Myseq.concat
-       [ prune_refinements c1 |> Myseq.map (fun (p,r) -> Branch (true,p), r);
+       [ (match b with
+          | True | False | BoolExpr _ -> Myseq.return (Cond, RCond Undet)
+          | _ -> Myseq.empty);
+         prune_refinements c1 |> Myseq.map (fun (p,r) -> Branch (true,p), r);
          prune_refinements c2 |> Myseq.map (fun (p,r) -> Branch (false,p), r) ]
   | Const s ->
      let rm_opt =
