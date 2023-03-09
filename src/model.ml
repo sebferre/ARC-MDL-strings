@@ -29,7 +29,7 @@ type _ path =
   | Left : cell path -> cell path
   | Middle : token path -> cell path
   | Right : cell path -> cell path
-  | Index : int * 'a path -> 'a path
+  | Branch : bool * 'a path -> 'a path
 
 type 'a ctx = 'a path -> row path
 let ctx0 : row ctx = (fun p -> p)
@@ -119,7 +119,7 @@ type _ data =
   | DNil : cell data
   | DAny : string -> cell data
   | DFactor : cell data * token data * cell data -> cell data
-  | DAlt : int * 'a data -> 'a data (* DOpt (Some d) = DAlt (1,d); DOpt None = DAlt (2, DNil) *)
+  | DAlt : bool * 'a data -> 'a data (* DOpt (Some d) = DAlt (true,d); DOpt None = DAlt (false, DNil) *)
   | DToken : string -> token data
             
 let row_data0 (row_size : int) = DRow (List.init row_size (fun _ -> DNil))
@@ -152,7 +152,7 @@ let rec id_of_path : type a. ?power2:int -> ?acc:int -> a path -> string =
   | Left p1 -> id_of_path ~power2:(2 * power2) ~acc p1
   | Right p1 -> id_of_path ~power2:(2 * power2) ~acc:(power2 + acc) p1
   | Middle p1 -> id_of_path ~power2 ~acc p1
-  | Index (i,p1) -> id_of_path ~power2:(2 * power2) ~acc:(if i=1 then acc else power2 + acc) p1
+  | Branch (b,p1) -> id_of_path ~power2:(2 * power2) ~acc:(if b then acc else power2 + acc) p1
   
 let xp_row_path (print : Xprint.t) (p : row path) =
   let id = id_of_path p in
@@ -201,7 +201,7 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
          xp_model ~prio_ctx:0 print ?ctx:ctx_r r;
          print#string "</div>")
   | Alt (c, Nil) (* Opt c *) ->
-     let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (1, p)))) in
+     let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
      xp_brackets_prio ~prio_ctx ~prio:1 print
        (fun print ->
          print#string "<div class=\"model-opt\">";
@@ -209,7 +209,7 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
          print#string " <span class=\"model-meta-operator\">?</span>";
          print#string "</div>")
   | Alt (Nil, c) (* Opt c *) ->
-     let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (2, p)))) in     
+     let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (false, p)))) in     
      xp_brackets_prio ~prio_ctx ~prio:1 print
        (fun print ->
          print#string "<div class=\"model-opt\">";
@@ -217,8 +217,8 @@ let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model 
          print#string " <span class=\"model-meta-operator\">?</span>";
          print#string "</div>")
   | Alt (c1,c2) ->
-     let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (1, p)))) in
-     let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Index (2, p)))) in
+     let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
+     let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (false, p)))) in
      xp_brackets_prio ~prio_ctx ~prio:2 print
        (fun print ->
          print#string "<div class=\"model-alt\">";
@@ -273,11 +273,11 @@ let rec xp_data : type a. ?prio_ctx:int -> Xprint.t -> a data -> unit =
          xp_data ~prio_ctx:0 print t;
          xp_data ~prio_ctx:0 print r;
          print#string "</div>")
-  | DAlt (i, DNil) ->
+  | DAlt (b, DNil) ->
      xp_brackets_prio ~prio_ctx ~prio:1 print
        (fun print ->
          print#string "<div class=\"data-opt\">ε</div>")
-  | DAlt (i,c) -> (* TODO: find better repr than 1/2: to indicate valid branch *)
+  | DAlt (b,c) -> (* TODO: find better repr than 1/2: to indicate valid branch *)
      xp_brackets_prio ~prio_ctx ~prio:2 print
        (fun print ->
          print#string "<div class=\"data-alt\">";
@@ -301,7 +301,7 @@ let rec contents_of_data : type a. a data -> string = function
   | DFactor (l,t,r) -> contents_of_data l
                        ^ contents_of_data t
                        ^ contents_of_data r
-  | DAlt (i,c) -> contents_of_data c
+  | DAlt (b,c) -> contents_of_data c
   | DToken s -> s
 
 let rec contents_of_row_data (d : row data) : string list =
@@ -327,7 +327,7 @@ let rec find : type a. a path -> a data -> Expr.value result =
   | Left p1, DFactor (l,_,_) -> find p1 l
   | Middle p1, DFactor (_,t,_) -> find p1 t
   | Right p1, DFactor (_,_,r) -> find p1 r
-  | Index (i,p1), DAlt (i',c) when i = i' -> find p1 c
+  | Branch (b,p1), DAlt (b',c) when b = b' -> find p1 c
   | _ -> Result.Ok `Null
 
 type bindings = (var * Expr.value) list
@@ -354,9 +354,9 @@ let rec get_bindings_aux : type a. a ctx -> a model -> a data -> bindings -> bin
      let acc = get_bindings_aux (fun p -> ctx (Left p)) l dl acc in
      let acc = get_bindings_aux (fun p -> ctx (Middle p)) t dt acc in
      acc
-  | Alt (c1,c2), DAlt (i,dc) ->
-     let c = if i = 1 then c1 else c2 in
-     let acc = get_bindings_aux (fun p -> ctx (Index (i,p))) c dc acc in
+  | Alt (c1,c2), DAlt (b,dc) ->
+     let c = if b then c1 else c2 in
+     let acc = get_bindings_aux (fun p -> ctx (Branch (b,p))) c dc acc in
      acc
   | _, DToken s ->
      if List.mem s special_consts
@@ -436,8 +436,8 @@ let rec generate : type a. a model -> a data = function
   | Any -> DAny "_"
   | Factor (l,t,r) -> DFactor (generate l, generate t, generate r)
   | Alt (c1,c2) -> (* TODO: make stochastic ? *)
-     if c1 <> Empty then DAlt (1, generate c1)
-     else if c2 <> Empty then DAlt (2, generate c2)
+     if c1 <> Empty then DAlt (true, generate c1)
+     else if c2 <> Empty then DAlt (false, generate c2)
      else assert false
   | Const s -> DToken s
   | Regex re -> DToken (regex_generate re)
@@ -576,10 +576,10 @@ let rec parse : type a c b. (a,c,b) parsing -> a model -> (c, a data * b) parseu
      if Myseq.is_empty seq1
      then
        let* dc2, b2 = parse parsing c2 cnt in
-       Myseq.return (DAlt (2,dc2), b2)
+       Myseq.return (DAlt (false,dc2), b2)
      else
        let* dc1, b1 = seq1 in
-       Myseq.return (DAlt (1,dc1), b1)
+       Myseq.return (DAlt (true,dc1), b1)
   | TokenParsing, Const cst, s -> token_parse (`String cst) s
   | TokenParsing, Regex rm, s -> token_parse (`Regex_model rm) s
   | _, Expr _, _ -> assert false
@@ -842,8 +842,8 @@ let rec encoder : type a. a model -> a data encoder = function
      let enc_c1 = encoder c1 in
      let enc_c2 = encoder c2 in
      (function
-      | DAlt (1,dc) -> dl_choice1 +. enc_c1 dc
-      | DAlt (2,dc) -> dl_choice2 +. enc_c2 dc
+      | DAlt (true,dc) -> dl_choice1 +. enc_c1 dc
+      | DAlt (false,dc) -> dl_choice2 +. enc_c2 dc
       | _ -> assert false)
   | Const _ ->
      (function
@@ -960,13 +960,13 @@ let rec apply_refinement : type a. refinement -> a path -> a model -> a model =
   | Left p1, Factor (l,t,r), _ -> Factor (apply_refinement rf p1 l, t, r)
   | Middle p1, Factor (l, t, r), _ -> Factor (l, apply_refinement rf p1 t, r)
   | Right p1, Factor (l, t, r), _ -> Factor (l, t, apply_refinement rf p1 r)
-  | Index (1,p1), Alt (c1, c2), _ ->
+  | Branch (true,p1), Alt (c1, c2), _ ->
      (match apply_refinement rf p1 c1 with
       | Any -> Any (* absorbs the second branch *)
       | c1' ->
          if c1' = c2 then c2 
          else Alt (c1', c2))
-  | Index (2,p1), Alt (c1, c2), _ -> Alt (c1, apply_refinement rf p1 c2)
+  | Branch (false,p1), Alt (c1, c2), _ -> Alt (c1, apply_refinement rf p1 c2)
 
   | This, Const _, RToken tok -> tok
   | This, Regex _, RToken tok -> tok
@@ -1077,8 +1077,8 @@ let local_refinements
                  (fun (read, d_res) ->
                    let data' =
                      match d_res with
-                     | Result.Ok d -> DAlt (1, d)
-                     | Result.Error d -> DAlt (2, d) in
+                     | Result.Ok d -> DAlt (true, d)
+                     | Result.Error d -> DAlt (false, d) in
                    read, data')
                  best_reads in
   let* r, m' = make_r_m' r_info ~alt best_reads in
@@ -1163,12 +1163,12 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                  (fun (ts,l,r,c2) (read,data') ->
                    match data' with
                    | DFactor (DAny sl, DToken st, DAny sr)
-                     | DAlt (1, DFactor (DAny sl, DToken st, DAny sr)) ->
+                     | DAlt (true, DFactor (DAny sl, DToken st, DAny sr)) ->
                       (Bintree.add st ts),
                       (if sl <> "" then Any else l),
                       (if sr <> "" then Any else r),
                       c2
-                   | DAlt (2, DAny sc2) ->
+                   | DAlt (false, DAny sc2) ->
                       ts, l, r, (if sc2 <> "" then Any else c2)
                    | _ -> assert false)
                  (Bintree.empty, Nil, Nil, Nil) best_reads in
@@ -1218,24 +1218,24 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
               partition_map_reads
                 (fun read ->
                   match read.data with
-                  | DAlt (i, dc) ->
-                     if i = 1 then Result.Ok {read with data = dc} else Result.Error read.env
+                  | DAlt (b, dc) ->
+                     if b then Result.Ok {read with data = dc} else Result.Error read.env
                   | _ -> assert false)
                 selected_reads
                 other_reads_env in
             refinements_aux ~nb_env_paths ~dl_M c1 sel1 other1)
-           |> Myseq.map (fun (p,r,supp,dl') -> Index (1,p), r, supp, dl');
+           |> Myseq.map (fun (p,r,supp,dl') -> Branch (true,p), r, supp, dl');
            (let sel2, other2 =
               partition_map_reads
                 (fun read ->
                   match read.data with
-                  | DAlt (i,dc) ->
-                     if i = 2 then Result.Ok {read with data = dc} else Result.Error read.env
+                  | DAlt (b,dc) ->
+                     if not b then Result.Ok {read with data = dc} else Result.Error read.env
                   | _ -> assert false)
                 selected_reads
                 other_reads_env in
             refinements_aux ~nb_env_paths ~dl_M c2 sel2 other2)
-           |> Myseq.map (fun (p,r,supp,dl') -> Index (2,p), r, supp, dl') ]
+           |> Myseq.map (fun (p,r,supp,dl') -> Branch (false,p), r, supp, dl') ]
       
     | Const _ ->
        local_refinements ~nb_env_paths ~dl_M m selected_reads
@@ -1335,8 +1335,8 @@ let rec prune_refinements : type a. a model -> (a path * refinement) Myseq.t = f
          prune_refinements r |> Myseq.map (fun (p,r) -> Right p, r) ]
   | Alt (c1,c2) ->
      Myseq.concat
-       [ prune_refinements c1 |> Myseq.map (fun (p,r) -> Index (1,p), r);
-         prune_refinements c2 |> Myseq.map (fun (p,r) -> Index (2,p), r) ]
+       [ prune_refinements c1 |> Myseq.map (fun (p,r) -> Branch (true,p), r);
+         prune_refinements c2 |> Myseq.map (fun (p,r) -> Branch (false,p), r) ]
   | Const s ->
      let rm_opt =
        List.find_opt
