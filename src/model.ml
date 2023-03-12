@@ -975,7 +975,7 @@ let read ?(dl_assuming_contents_known = false) ~(env : env) ~(bindings : binding
   let parses =
     let* data, () = parse RowParsing m ls in
     let dl = (* QUICK *)
-      let dl_data = encoder m data in
+      let dl_data = encoder m data in (* should be equivalent to use [m], which is best ? *)
       (* rounding before sorting to absorb float error accumulation *)
       dl_round dl_data in
     Myseq.return (data, dl) in
@@ -1099,7 +1099,7 @@ let inter_union_reads
       List.fold_left
         (fun refs read ->
           let refs_read = get_rs read in
-          List.fold_left
+          List.fold_left (* union(refs, refs_read) *)
             (fun refs (r,data') ->
               if Mymap.mem r refs
               then refs
@@ -1119,7 +1119,7 @@ let inter_union_reads
          (fun (alt_reads,refs) exampleI_reads ->
            let alt_readI, refsI = process_example exampleI_reads in
            let refs =
-             Mymap.merge
+             Mymap.merge (* intersection(refs, refsI) *)
                (fun r best_reads_opt best_readI_opt ->
                  match best_reads_opt, best_readI_opt with
                  | Some best_reads, Some best_readI -> Some (best_readI :: best_reads)
