@@ -91,6 +91,20 @@ let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize 
   Str.string_match re s 0
   && Str.match_end () = String.length s
 
+(* printing *)
+  
+let xp_string (print : Xprint.t) (s : string) =
+  print#string "<pre class=\"inline\">";
+  print#string s;
+  print#string "</pre>"
+let pp_string = Xprint.to_stdout xp_string
+
+let xp_brackets (print : Xprint.t) (xp : Xprint.t -> unit) : unit =
+  print#string "<div class=\"model-brackets\">";
+  xp print;
+  print#string "</div>"
+
+  
 (* combinatorics *)
 
 let rec sum_conv (lf : (int -> float) list) (n : int) : float =

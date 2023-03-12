@@ -22,6 +22,16 @@ type value =
   | `List of value list
   | `Fun of (value -> value result) ]
 
+let xp_value (print : Xprint.t) : value -> unit = function
+  | `Null -> print#string "null"
+  | `String s -> xp_string print s
+  | `Int i -> print#int i
+  | `Bool b -> print#string (if b then "true" else "false")
+  | `Date date -> raise TODO
+  | `Time time -> raise TODO
+  | `List _ -> raise TODO
+  | `Fun _ -> print#string "_fun_" 
+      
 (* extraction functions, not used much *)
 (* deprecated
 let string_of_value : value -> string result = function
@@ -62,8 +72,9 @@ module Funct =
       | `Year 
       | `Hours 
       | `Minutes 
-      | `Seconds ]
-    let nb_unary = 16
+      | `Seconds
+      | `Equals of value ]
+    let nb_unary = 17
 
     type binary =
       [ `Append
@@ -127,6 +138,7 @@ module Funct =
       | `Hours -> print#string "hours"
       | `Minutes -> print#string "minutes"
       | `Seconds -> print#string "seconds"
+      | `Equals v -> print#string "equals["; xp_value print v; print#string "]"
 
     let xp_binary (print : Xprint.t) : binary -> unit = function
       | `Append -> print#string "append"
@@ -155,6 +167,7 @@ let expr_asd : [`Expr] asd =
   
 let rec xp_expr (xp_var : 'var Xprint.xp) (print : Xprint.t) : 'var expr -> unit = function
   | `Ref p -> xp_var print p
+  | `Unary (`Equals v0,e1) -> xp_expr xp_var print e1; print#string " = "; xp_value print v0
   | `Unary (f,e1) -> Funct.xp_unary print f; print#string "("; xp_expr xp_var print e1; print#string ")"
   | `Binary (`Append, e1,e2) -> xp_expr xp_var print e1; print#string " + "; xp_expr xp_var print e2
   | `Binary (f,e1,e2) -> Funct.xp_binary print f; print#string "("; xp_expr xp_var print e1; print#string ","; xp_expr xp_var print e2; print#string ")"
@@ -226,6 +239,8 @@ and eval_unary f v1 =
   | `Seconds, `Time t1 ->
      let res = Funct.seconds t1 in
      Result.Ok (`Int res)
+  | `Equals v0, _ -> (* TODO: consider moving below `Null, `List, and `Fun *)
+     Result.Ok (`Bool (v1 = v0))
   | _, `Null ->
      Result.Ok `Null
   | _, `List l1 ->
@@ -482,9 +497,17 @@ let make_index (bindings : ('var * value) list) : 'var index =
       (function
        | `String _, `String _ -> [`Append]
        | _ -> []) in*)
-  Index.fold (* making some values available as strings, extend Model.apply/Expr accordingly *)
+  Index.fold
     (fun v exprs res ->
-      match v with
-      | `Int i -> Index.bind_set (`String (string_of_int i)) exprs res
-      | _ -> res)
+      let res = (* adding equalities on specific values *)
+        match v with
+        | `Bool _ -> res (* not equalities on Booleans *)
+        | `String _ | `Int _ ->
+           Index.bind (`Bool true) (`Unary (`Equals v, exprs)) res
+        | _ -> res in (* TODO: consider equality on other types *)
+      let res = (* making some values available as strings, extend Model.apply/Expr accordingly *)
+        match v with
+        | `Int i -> Index.bind_set (`String (string_of_int i)) exprs res
+        | _ -> res in
+      res)
     index index

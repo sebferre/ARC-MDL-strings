@@ -147,17 +147,6 @@ let env0 = row_data0 0
 
 (* printing *)
 
-let xp_string (print : Xprint.t) (s : string) =
-  print#string "<pre class=\"inline\">";
-  print#string s;
-  print#string "</pre>"
-let pp_string = Xprint.to_stdout xp_string
-
-let xp_brackets (print : Xprint.t) (xp : Xprint.t -> unit) : unit =
-  print#string "<div class=\"model-brackets\">";
-  xp print;
-  print#string "</div>"
-
 let rec id_of_path : type a. ?power2:int -> ?acc:int -> a path -> string =
   fun ?(power2 = 1) ?(acc = 0) p ->
   match p with
@@ -1108,7 +1097,7 @@ let inter_union_reads
         Mymap.empty reads in
     alt_read, refs
   in
-  match reads with
+  match List.rev reads with (* rev to have best_reads in right order at the end *)
   | [] -> assert false
   | example0_reads :: other_reads ->
      let alt_read0, refs0 = process_example example0_reads in
@@ -1138,12 +1127,13 @@ let local_refinements
                 -> a read list list (* local data with read information *)
                 -> (a read -> a data) (* alternative data when a refinement does not apply *)
                 -> (a read -> (r * a data) list) (* refinement information with related new local data *)
+                -> (r -> (a read * (a data, a data) Result.t) list -> (a read * (a data, a data) Result.t) list) (* postprocessing best reads given r_info, e.g. to fill in unatched examples *)
                 -> (r -> alt:bool -> (a read * a data) list -> (a path * refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
                 -> (a path * refinement * int * dl) Myseq.t (* result: a sequence of path-wise refinements with estimate DL *)
   =
   fun ~nb_env_paths ~dl_M
       m selected_reads
-      alt_data_of_read rs_of_read make_r_m' ->
+      alt_data_of_read rs_of_read postprocess_best_reads make_r_m'->
   let encoder_m = encoder m in
   let dl_m = dl_model ~nb_env_paths m in
   let r_best_reads =
@@ -1152,6 +1142,7 @@ let local_refinements
       (fun read -> rs_of_read read)
       selected_reads in
   let* r_info, best_reads = Mymap.to_seq r_best_reads in
+  let best_reads = postprocess_best_reads r_info best_reads in
   let supp, nb =
     List.fold_left
       (fun (supp,nb) (read, d_res) ->
@@ -1240,37 +1231,38 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
              else rs in
            (* no const string to avoid unstructured constant strings like ' 4/11', must be instance of a regexp *)
            rs)
-      (fun r_info ~alt best_reads ->
-        let* m' =
-          match r_info with
-          | `IsNil ->
-             let m' = Nil in
-             if alt then Myseq.empty
-             else Myseq.return m'
-          | `Token tm ->
-             let ts, l, r, c2 = (* token string set, left and right (Nil if all empty strings, Any otherwise), alternative (Nil if all alts are empty) *)
-               List.fold_left
-                 (fun (ts,l,r,c2) (read,data') ->
-                   match data' with
-                   | DFactor (DAny sl, DToken st, DAny sr)
-                     | DAlt (true, DFactor (DAny sl, DToken st, DAny sr)) ->
-                      (Bintree.add st ts),
-                      (if sl <> "" then Any else l),
-                      (if sr <> "" then Any else r),
-                      c2
-                   | DAlt (false, DAny sc2) ->
-                      ts, l, r, (if sc2 <> "" then Any else c2)
-                   | _ -> assert false)
-                 (Bintree.empty, Nil, Nil, Nil) best_reads in
-             let tm' = (* shortcut: replacing constant regex by a Const string *)
-               match tm with
-               | Regex _ when Bintree.cardinal ts = 1 -> Const (Bintree.choose ts)
-               | _ -> tm in
-             let m' = Factor (l, tm', r) in
-             let m'= if alt then Alt (Undet, m', c2) else m' in
-             Myseq.return m' in
-        let r = RCell m' in
-        Myseq.return (This,r,m'))
+         (fun r_info best_reads -> best_reads)
+         (fun r_info ~alt best_reads ->
+           let* m' =
+             match r_info with
+             | `IsNil ->
+                let m' = Nil in
+                if alt then Myseq.empty
+                else Myseq.return m'
+             | `Token tm ->
+                let ts, l, r, c2 = (* token string set, left and right (Nil if all empty strings, Any otherwise), alternative (Nil if all alts are empty) *)
+                  List.fold_left
+                    (fun (ts,l,r,c2) (read,data') ->
+                      match data' with
+                      | DFactor (DAny sl, DToken st, DAny sr)
+                        | DAlt (true, DFactor (DAny sl, DToken st, DAny sr)) ->
+                         (Bintree.add st ts),
+                         (if sl <> "" then Any else l),
+                         (if sr <> "" then Any else r),
+                         c2
+                      | DAlt (false, DAny sc2) ->
+                         ts, l, r, (if sc2 <> "" then Any else c2)
+                      | _ -> assert false)
+                    (Bintree.empty, Nil, Nil, Nil) best_reads in
+                let tm' = (* shortcut: replacing constant regex by a Const string *)
+                  match tm with
+                  | Regex _ when Bintree.cardinal ts = 1 -> Const (Bintree.choose ts)
+                  | _ -> tm in
+                let m' = Factor (l, tm', r) in
+                let m'= if alt then Alt (Undet, m', c2) else m' in
+                Myseq.return m' in
+           let r = RCell m' in
+           Myseq.return (This,r,m'))
 
     | Factor (l,t,r) ->
        Myseq.concat
@@ -1311,22 +1303,43 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                  (fun read -> read.data)
                  (fun read ->
                    match read.data with
-                   | DAlt (db,_) as d ->
-                      let es : exprset = Expr.index_lookup (`Bool db) read.index in
+                   | DAlt (true,_) as d ->
+                      let es : exprset = Expr.index_lookup (`Bool true) read.index in
                       Myseq.fold_left
                         (fun rs e -> (`Expr e, d) :: rs)
                         [] (Expr.exprset_to_seq es)
+                   | DAlt (false, _) -> []
                    | _ -> assert false)
-                 (fun r_info ~alt best_reads ->
-                   if alt
-                   then Myseq.empty
-                   else
-                     let r, m' =
-                       match r_info with
-                       | `Expr e ->
-                          let cond = BoolExpr e in
-                          RCond cond, Alt (cond, c1, c2) in
-                     Myseq.return (Cond,r,m'))
+                 (fun (`Expr e) best_reads ->
+                   let cond = BoolExpr e in
+                   List.map2
+                     (fun reads (_, data_res as best_read) ->
+                       match data_res with
+                       | Result.Ok _ -> best_read (* matches the condition positively *)
+                       | Result.Error _ -> (* was not found to match the condition positively *)
+                          let best_read_opt =
+                            List.find_opt
+                              (fun read ->
+                                match read.data with
+                                | DAlt (true, _) -> false
+                                | DAlt (false, _) ->
+                                   let ok = eval_cond_model cond read.bindings = Result.Ok False in
+                                   ok
+                                | _ -> assert false)
+                              reads in
+                          (match best_read_opt with
+                           | None -> best_read (* does not match the condition negatively either *)
+                           | Some best_read -> (* best_read matches the condition negatively *)
+                              (best_read, Result.Ok best_read.data)))
+                     selected_reads best_reads)
+                 (fun (`Expr e) ~alt best_reads ->
+                   if not alt
+                   then
+                     let cond = BoolExpr e in
+                     let r = RCond cond in
+                     let m' = Alt (cond, c1, c2) in
+                     Myseq.return (Cond,r, m')
+                   else Myseq.empty)
             | True | False | BoolExpr _ -> Myseq.empty);
            
            (let sel1, other1 =
@@ -1365,6 +1378,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                (fun rs e -> (`Expr e, DToken s) :: rs)
                [] (Expr.exprset_to_seq es) in
            rs)
+         (fun r_info best_reads -> best_reads)
          (fun r_info ~alt best_reads ->
            let m' =
              match r_info with
@@ -1403,17 +1417,18 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                (fun rs e -> (`Expr e, DToken s) :: rs)
                rs (Expr.exprset_to_seq es) in
            rs)
-       (fun r_info ~alt best_reads ->
-         let* m' =
-           match r_info with
-           | `CommonStr s ->
-              if alt then Myseq.empty (* to avoid rote learning, enumerating occurring values *)
-              else Myseq.return (Const s)
-           | `RE re' -> Myseq.return (Regex re')
-           | `Expr e -> Myseq.return (Expr e) in
-         let m' = if alt then Alt (Undet, m',m) else m' in
-         let r = RToken m' in
-         Myseq.return (This,r,m'))
+         (fun r_info best_reads -> best_reads)
+         (fun r_info ~alt best_reads ->
+           let* m' =
+             match r_info with
+             | `CommonStr s ->
+                if alt then Myseq.empty (* to avoid rote learning, enumerating occurring values *)
+                else Myseq.return (Const s)
+             | `RE re' -> Myseq.return (Regex re')
+             | `Expr e -> Myseq.return (Expr e) in
+           let m' = if alt then Alt (Undet, m',m) else m' in
+           let r = RToken m' in
+           Myseq.return (This,r,m'))
     | Expr e -> Myseq.empty
      
 let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : (row path * refinement * int (* support *) * dl * row model) Myseq.t =

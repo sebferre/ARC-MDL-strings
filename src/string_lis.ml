@@ -218,7 +218,7 @@ let html_of_suggestion ~input_dico = function
 
 let html_of_row_from_string_list (ls : string list) =
   String.concat "</br>"
-    (List.map (Xprint.to_string Model.xp_string) ls)
+    (List.map (Xprint.to_string xp_string) ls)
 
 let html_of_row_from_data data =
   Model.string_of_data data
