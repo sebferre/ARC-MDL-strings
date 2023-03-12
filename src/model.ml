@@ -1073,17 +1073,16 @@ let partition_map_reads (f : 'a -> ('b,'c) Result.t) (selected_reads : 'a list l
 
 let inter_union_reads
     : type a r.
-           (a read -> a data)
-           -> (a read -> (r * a data) list)
+           (a read -> (r * a data) list)
            -> a read list list
-           -> (r, (a read * (a data, a data) Result.t) list) Mymap.t =
-  fun alt_data get_rs reads ->
+           -> (r, (a read * a data option) list) Mymap.t =
+  fun get_rs reads ->
   (* given a function extracting refinement information [type 'r] from each read,
      return a set of such ref-info, each mapped to the dl-shortest reads supporting it, along with new data *)
   let process_example reads =
     assert (reads <> []);
     let read0 = List.hd reads in
-    let alt_read = (read0, Result.Error (alt_data read0)) in
+    let alt_read = (read0, None) in
     let refs =
       List.fold_left
         (fun refs read ->
@@ -1092,7 +1091,7 @@ let inter_union_reads
             (fun refs (r,data') ->
               if Mymap.mem r refs
               then refs
-              else Mymap.add r (read, Result.Ok data') refs)
+              else Mymap.add r (read, Some data') refs)
             refs refs_read)
         Mymap.empty reads in
     alt_read, refs
@@ -1125,42 +1124,37 @@ let local_refinements
     : type a r. nb_env_paths:int -> dl_M:dl
                 -> a model (* local model at some path *)
                 -> a read list list (* local data with read information *)
-                -> (a read -> a data) (* alternative data when a refinement does not apply *)
                 -> (a read -> (r * a data) list) (* refinement information with related new local data *)
-                -> (r -> (a read * (a data, a data) Result.t) list -> (a read * (a data, a data) Result.t) list) (* postprocessing best reads given r_info, e.g. to fill in unatched examples *)
+                -> (r -> (a read * a data option) list -> (a read * a data option) list) (* postprocessing best reads given r_info, e.g. to fill in unatched examples *)
                 -> (r -> alt:bool -> (a read * a data) list -> (a path * refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
                 -> (a path * refinement * int * dl) Myseq.t (* result: a sequence of path-wise refinements with estimate DL *)
   =
   fun ~nb_env_paths ~dl_M
       m selected_reads
-      alt_data_of_read rs_of_read postprocess_best_reads make_r_m'->
+      rs_of_read postprocess_best_reads make_r_m'->
   let encoder_m = encoder m in
   let dl_m = dl_model ~nb_env_paths m in
-  let r_best_reads =
-    inter_union_reads
-      (fun read -> alt_data_of_read read)
-      (fun read -> rs_of_read read)
-      selected_reads in
+  let r_best_reads = inter_union_reads rs_of_read selected_reads in
   let* r_info, best_reads = Mymap.to_seq r_best_reads in
   let best_reads = postprocess_best_reads r_info best_reads in
   let supp, nb =
     List.fold_left
       (fun (supp,nb) (read, d_res) ->
         match d_res with
-        | Result.Ok _ -> supp+1, nb+1
-        | Result.Error _ -> supp, nb+1)
+        | Some _ -> supp+1, nb+1
+        | None -> supp, nb+1)
       (0,0) best_reads in
   let alt, best_reads =
     if supp = nb
     then false, List.map
-                  (function (read, Result.Ok data') -> (read, data') | _ -> assert false)
+                  (function (read, Some data') -> (read, data') | _ -> assert false)
                   best_reads
     else true, List.map
                  (fun (read, d_res) ->
                    let data' =
                      match d_res with
-                     | Result.Ok d -> DAlt (true, d)
-                     | Result.Error d -> DAlt (false, d) in
+                     | Some d' -> DAlt (true, d')
+                     | None -> DAlt (false, read.data) in
                    read, data')
                  best_reads in
   let* p, r, m' = make_r_m' r_info ~alt best_reads in
@@ -1198,7 +1192,6 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
     | Nil -> Myseq.empty
     | Any ->
        local_refinements ~nb_env_paths ~dl_M m selected_reads
-         (fun read -> DAny (contents_of_data read.data))
          (fun read ->
            (* r = [`IsNil | `Token of token model] *)
            let s = contents_of_data read.data in
@@ -1300,7 +1293,6 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
             | Undet ->
                local_refinements ~nb_env_paths ~dl_M m selected_reads
                  (* r = [`Expr of expr] *)
-                 (fun read -> read.data)
                  (fun read ->
                    match read.data with
                    | DAlt (true,_) as d ->
@@ -1315,8 +1307,8 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                    List.map2
                      (fun reads (_, data_res as best_read) ->
                        match data_res with
-                       | Result.Ok _ -> best_read (* matches the condition positively *)
-                       | Result.Error _ -> (* was not found to match the condition positively *)
+                       | Some _ -> best_read (* matches the condition positively *)
+                       | None -> (* was not found to match the condition positively *)
                           let best_read_opt =
                             List.find_opt
                               (fun read ->
@@ -1330,7 +1322,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                           (match best_read_opt with
                            | None -> best_read (* does not match the condition negatively either *)
                            | Some best_read -> (* best_read matches the condition negatively *)
-                              (best_read, Result.Ok best_read.data)))
+                              (best_read, Some best_read.data)))
                      selected_reads best_reads)
                  (fun (`Expr e) ~alt best_reads ->
                    if not alt
@@ -1369,7 +1361,6 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
     | Const _ ->
        local_refinements ~nb_env_paths ~dl_M m selected_reads
          (* r = [`Expr of expr] *)
-         (fun read -> DToken (contents_of_data read.data)) (* TODO: same as read.data ? *)
          (fun read ->
            let s = contents_of_data read.data in
            let rs =
@@ -1396,7 +1387,6 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
          | _ -> [] in
        local_refinements ~nb_env_paths ~dl_M m selected_reads
          (* r = [`CommonStr of string | `RE of regex_model | `Expr of expr] *)
-         (fun read -> DToken (contents_of_data read.data))
          (fun read ->
            let s = contents_of_data read.data in
            let rs = [] in
