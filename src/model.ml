@@ -1071,11 +1071,13 @@ let partition_map_reads (f : 'a -> ('b,'c) Result.t) (selected_reads : 'a list l
     selected_reads
     other_reads
 
+type 'a best_reads = ('a read * 'a data option) list (* for each example, the selected best read, and an optional new data: Some d' for a match, None for a non-match *)
+  
 let inter_union_reads
     : type a r.
            (a read -> (r * a data) list)
            -> a read list list
-           -> (r, (a read * a data option) list) Mymap.t =
+           -> (r, a best_reads) Mymap.t =
   fun get_rs reads ->
   (* given a function extracting refinement information [type 'r] from each read,
      return a set of such ref-info, each mapped to the dl-shortest reads supporting it, along with new data *)
@@ -1120,12 +1122,29 @@ let inter_union_reads
          (alt_reads, refs) other_reads in
      refs
 
+let extend_partial_best_reads 
+    : type a. a read list list
+           -> a best_reads
+           -> (a read -> (a read * a data) option)
+           -> a best_reads
+  =
+  fun selected_reads best_reads check_alt_read ->
+  List.map2
+    (fun reads (_, data_res as best_read_data) ->
+      match data_res with
+      | Some _ -> best_read_data (* already matches some refinement *)
+      | None ->
+         (match List.find_map check_alt_read reads with
+          | Some (best_read', data') -> (best_read', Some data') (* new match *)
+          | None -> best_read_data)) (* no change *)
+    selected_reads best_reads
+
 let local_refinements
     : type a r. nb_env_paths:int -> dl_M:dl
                 -> a model (* local model at some path *)
                 -> a read list list (* local data with read information *)
                 -> (a read -> (r * a data) list) (* refinement information with related new local data *)
-                -> (r -> (a read * a data option) list -> (a read * a data option) list) (* postprocessing best reads given r_info, e.g. to fill in unatched examples *)
+                -> (r -> a best_reads -> a best_reads) (* postprocessing best reads given r_info, e.g. to fill in unatched examples *)
                 -> (r -> alt:bool -> (a read * a data) list -> (a path * refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
                 -> (a path * refinement * int * dl) Myseq.t (* result: a sequence of path-wise refinements with estimate DL *)
   =
@@ -1304,26 +1323,15 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                    | _ -> assert false)
                  (fun (`Expr e) best_reads ->
                    let cond = BoolExpr e in
-                   List.map2
-                     (fun reads (_, data_res as best_read) ->
-                       match data_res with
-                       | Some _ -> best_read (* matches the condition positively *)
-                       | None -> (* was not found to match the condition positively *)
-                          let best_read_opt =
-                            List.find_opt
-                              (fun read ->
-                                match read.data with
-                                | DAlt (true, _) -> false
-                                | DAlt (false, _) ->
-                                   let ok = eval_cond_model cond read.bindings = Result.Ok False in
-                                   ok
-                                | _ -> assert false)
-                              reads in
-                          (match best_read_opt with
-                           | None -> best_read (* does not match the condition negatively either *)
-                           | Some best_read -> (* best_read matches the condition negatively *)
-                              (best_read, Some best_read.data)))
-                     selected_reads best_reads)
+                   extend_partial_best_reads
+                     selected_reads best_reads
+                     (fun read ->
+                       match read.data with
+                       | DAlt (db, _) ->
+                          if not db && eval_cond_model cond read.bindings = Result.Ok False
+                          then Some (read, read.data)
+                          else None
+                       | _ -> assert false))
                  (fun (`Expr e) ~alt best_reads ->
                    if not alt
                    then
