@@ -1071,7 +1071,7 @@ let partition_map_reads (f : 'a -> ('b,'c) Result.t) (selected_reads : 'a list l
     selected_reads
     other_reads
 
-type 'a best_reads = ('a read * 'a data option) list (* for each example, the selected best read, and an optional new data: Some d' for a match, None for a non-match *)
+type 'a best_reads = (bool * 'a read * 'a data) list (* for each example, a matching flag, the selected best read, and new data *)
   
 let inter_union_reads
     : type a r.
@@ -1084,7 +1084,7 @@ let inter_union_reads
   let process_example reads =
     assert (reads <> []);
     let read0 = List.hd reads in
-    let alt_read = (read0, None) in
+    let alt_read = (false, read0, read0.data) in
     let refs =
       List.fold_left
         (fun refs read ->
@@ -1093,7 +1093,7 @@ let inter_union_reads
             (fun refs (r,data') ->
               if Mymap.mem r refs
               then refs
-              else Mymap.add r (read, Some data') refs)
+              else Mymap.add r (true, read, data') refs)
             refs refs_read)
         Mymap.empty reads in
     alt_read, refs
@@ -1130,13 +1130,13 @@ let extend_partial_best_reads
   =
   fun selected_reads best_reads check_alt_read ->
   List.map2
-    (fun reads (_, data_res as best_read_data) ->
-      match data_res with
-      | Some _ -> best_read_data (* already matches some refinement *)
-      | None ->
-         (match List.find_map check_alt_read reads with
-          | Some (best_read', data') -> (best_read', Some data') (* new match *)
-          | None -> best_read_data)) (* no change *)
+    (fun reads (matching, _, data as best_read_data) ->
+      if matching
+      then best_read_data (* already matches some refinement *)
+      else
+        (match List.find_map check_alt_read reads with
+         | Some (best_read', data') -> (true, best_read', data') (* new match *)
+         | None -> best_read_data)) (* no change *)
     selected_reads best_reads
 
 let local_refinements
@@ -1145,8 +1145,8 @@ let local_refinements
                 -> a read list list (* local data with read information *)
                 -> (a read -> (r * a data) list) (* refinement information with related new local data *)
                 -> (r -> a best_reads -> a best_reads) (* postprocessing best reads given r_info, e.g. to fill in unatched examples *)
-                -> (r -> alt:bool -> (a read * a data) list -> (a path * refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
-                -> (a path * refinement * int * dl) Myseq.t (* result: a sequence of path-wise refinements with estimate DL *)
+                -> (r -> alt:bool -> a best_reads -> (a path * refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
+                -> (a path * refinement * int (* support *) * dl) Myseq.t (* result: a sequence of path-wise refinements with support and estimate DL *)
   =
   fun ~nb_env_paths ~dl_M
       m selected_reads
@@ -1158,31 +1158,26 @@ let local_refinements
   let best_reads = postprocess_best_reads r_info best_reads in
   let supp, nb =
     List.fold_left
-      (fun (supp,nb) (read, d_res) ->
-        match d_res with
-        | Some _ -> supp+1, nb+1
-        | None -> supp, nb+1)
+      (fun (supp,nb) (matching, _read, _data) ->
+        if matching
+        then supp+1, nb+1
+        else supp, nb+1)
       (0,0) best_reads in
-  let alt, best_reads =
+  let alt, alt_best_reads =
     if supp = nb
-    then false, List.map
-                  (function (read, Some data') -> (read, data') | _ -> assert false)
-                  best_reads
+    then false, best_reads
     else true, List.map
-                 (fun (read, d_res) ->
-                   let data' =
-                     match d_res with
-                     | Some d' -> DAlt (true, d')
-                     | None -> DAlt (false, read.data) in
-                   read, data')
+                 (fun (matching, read, data) ->
+                   let data' = DAlt (matching, data) in
+                   matching, read, data')
                  best_reads in
-  let* p, r, m' = make_r_m' r_info ~alt best_reads in
+  let* p, r, m' = make_r_m' r_info ~alt alt_best_reads in
   let encoder_m' = encoder m' in
   let dl_m' = dl_model ~nb_env_paths m' in
   let dl' =
     dl_M -. dl_m +. dl_m'
-    +. !alpha *. Mdl.sum best_reads
-                   (fun (read, data') ->
+    +. !alpha *. Mdl.sum alt_best_reads
+                   (fun (matching, read, data') ->
                      read.dl -. encoder_m read.data +. encoder_m' data') in
   Myseq.return (p, r, supp, dl')     
 
@@ -1244,7 +1239,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
            (* no const string to avoid unstructured constant strings like ' 4/11', must be instance of a regexp *)
            rs)
          (fun r_info best_reads -> best_reads)
-         (fun r_info ~alt best_reads ->
+         (fun r_info ~alt alt_best_reads ->
            let* m' =
              match r_info with
              | `IsNil ->
@@ -1254,7 +1249,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
              | `Token tm ->
                 let ts, l, r, c2 = (* token string set, left and right (Nil if all empty strings, Any otherwise), alternative (Nil if all alts are empty) *)
                   List.fold_left
-                    (fun (ts,l,r,c2) (read,data') ->
+                    (fun (ts,l,r,c2) (_matching,_read,data') ->
                       match data' with
                       | DFactor (DAny sl, DToken st, DAny sr)
                         | DAlt (true, DFactor (DAny sl, DToken st, DAny sr)) ->
@@ -1265,7 +1260,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                       | DAlt (false, DAny sc2) ->
                          ts, l, r, (if sc2 <> "" then Any else c2)
                       | _ -> assert false)
-                    (Bintree.empty, Nil, Nil, Nil) best_reads in
+                    (Bintree.empty, Nil, Nil, Nil) alt_best_reads in
                 let tm' = (* shortcut: replacing constant regex by a Const string *)
                   match tm with
                   | Regex _ when Bintree.cardinal ts = 1 -> Const (Bintree.choose ts)
@@ -1332,7 +1327,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                           then Some (read, read.data)
                           else None
                        | _ -> assert false))
-                 (fun (`Expr e) ~alt best_reads ->
+                 (fun (`Expr e) ~alt _alt_best_reads ->
                    if not alt
                    then
                      let cond = BoolExpr e in
@@ -1378,7 +1373,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                [] (Expr.exprset_to_seq es) in
            rs)
          (fun r_info best_reads -> best_reads)
-         (fun r_info ~alt best_reads ->
+         (fun r_info ~alt _alt_best_reads ->
            let m' =
              match r_info with
              | `Expr e -> Expr e in
@@ -1416,7 +1411,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                rs (Expr.exprset_to_seq es) in
            rs)
          (fun r_info best_reads -> best_reads)
-         (fun r_info ~alt best_reads ->
+         (fun r_info ~alt _alt_best_reads ->
            let* m' =
              match r_info with
              | `CommonStr s ->
