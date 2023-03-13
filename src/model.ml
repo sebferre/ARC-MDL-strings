@@ -417,7 +417,7 @@ let get_bindings (row : row model) (drow : row data) : bindings =
 let eval_expr_on_env e env =
   Expr.eval (fun p -> find p env) e
 
-let eval_expr_on_bindings e bindings =
+let eval_expr e bindings =
   Expr.eval
     (fun p ->
       match List.assoc_opt p bindings with
@@ -425,17 +425,21 @@ let eval_expr_on_bindings e bindings =
       | None -> Result.Ok `Null)
     e
 
+let eval_bool_expr (e : expr) (bindings : bindings) : bool result =
+  let| v = eval_expr e bindings in
+  match v with
+  | `Bool b -> Result.Ok b
+  | `Null -> Result.Ok false
+  | _ -> Result.Error (Invalid_argument "Model.eval_bool_expr: bool or null expected as Boolean expression value")
+
 let eval_cond_model (b : cond_model) (bindings : bindings) : cond_model result =
   match b with
   | Undet -> Result.Ok Undet
   | True -> Result.Ok True
   | False -> Result.Ok False
   | BoolExpr e ->
-     let| v = eval_expr_on_bindings e bindings in
-     (match v with
-      | `Bool b -> Result.Ok (if b then True else False)
-      | `Null -> Result.Ok False
-      | _ -> Result.Error (Invalid_argument "Model.eval_cond_model: bool expected as expression value"))
+     let| b = eval_bool_expr e bindings in
+     Result.Ok (if b then True else False)
 
 exception NullExpr (* error for expressions that contains a null value *)
 
@@ -467,7 +471,7 @@ let rec eval_model : type a. a model -> bindings -> a model result =
   | Const s -> Result.Ok (Const s)
   | Regex re -> Result.Ok (Regex re)
   | Expr e ->
-     let| v = eval_expr_on_bindings e bindings in
+     let| v = eval_expr e bindings in
      (match v with
       | `String s -> Result.Ok (Const s)
       | `Int i -> Result.Ok (Const (string_of_int i))
@@ -1139,13 +1143,24 @@ let extend_partial_best_reads
          | None -> best_read_data)) (* no change *)
     selected_reads best_reads
 
+let make_alt : type a. a model -> a model -> a best_reads -> a model * a best_reads =
+  (* making an alternative, model and data *)
+  fun m1 m2 best_reads ->
+  let m' = Alt (Undet, m1, m2) in
+  let best_reads' =
+    List.map
+      (fun (matching, read, data) ->
+        (matching, read, DAlt (matching, data)))
+      best_reads in
+  m', best_reads'
+  
 let local_refinements
     : type a r. nb_env_paths:int -> dl_M:dl
                 -> a model (* local model at some path *)
                 -> a read list list (* local data with read information *)
                 -> (a read -> (r * a data) list) (* refinement information with related new local data *)
                 -> (r -> a best_reads -> a best_reads) (* postprocessing best reads given r_info, e.g. to fill in unatched examples *)
-                -> (r -> alt:bool -> a best_reads -> (a path * refinement * a model) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads *)
+                -> (r -> alt:bool -> a best_reads -> (a path * refinement * a model * a best_reads) Myseq.t) (* converting refinement info, alt mode (true if partial match), support, and best reads to a new model and corresponding new data *)
                 -> (a path * refinement * int (* support *) * dl) Myseq.t (* result: a sequence of path-wise refinements with support and estimate DL *)
   =
   fun ~nb_env_paths ~dl_M
@@ -1163,20 +1178,13 @@ let local_refinements
         then supp+1, nb+1
         else supp, nb+1)
       (0,0) best_reads in
-  let alt, alt_best_reads =
-    if supp = nb
-    then false, best_reads
-    else true, List.map
-                 (fun (matching, read, data) ->
-                   let data' = DAlt (matching, data) in
-                   matching, read, data')
-                 best_reads in
-  let* p, r, m' = make_r_m' r_info ~alt alt_best_reads in
+  let alt = (supp < nb) in
+  let* p, r, m', best_reads = make_r_m' r_info ~alt best_reads in
   let encoder_m' = encoder m' in
   let dl_m' = dl_model ~nb_env_paths m' in
   let dl' =
     dl_M -. dl_m +. dl_m'
-    +. !alpha *. Mdl.sum alt_best_reads
+    +. !alpha *. Mdl.sum best_reads
                    (fun (matching, read, data') ->
                      read.dl -. encoder_m read.data +. encoder_m' data') in
   Myseq.return (p, r, supp, dl')     
@@ -1203,7 +1211,9 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
               refinements_aux ~nb_env_paths ~dl_M m m_reads other_reads_env
               |> Myseq.map (fun (p,r,supp,dl') -> (Col (i,p), r, supp, dl')))
             lm)
+      
     | Nil -> Myseq.empty
+           
     | Any ->
        local_refinements ~nb_env_paths ~dl_M m selected_reads
          (fun read ->
@@ -1239,37 +1249,35 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
            (* no const string to avoid unstructured constant strings like ' 4/11', must be instance of a regexp *)
            rs)
          (fun r_info best_reads -> best_reads)
-         (fun r_info ~alt alt_best_reads ->
-           let* m' =
-             match r_info with
-             | `IsNil ->
-                let m' = Nil in
-                if alt then Myseq.empty
-                else Myseq.return m'
-             | `Token tm ->
-                let ts, l, r, c2 = (* token string set, left and right (Nil if all empty strings, Any otherwise), alternative (Nil if all alts are empty) *)
-                  List.fold_left
-                    (fun (ts,l,r,c2) (_matching,_read,data') ->
-                      match data' with
-                      | DFactor (DAny sl, DToken st, DAny sr)
-                        | DAlt (true, DFactor (DAny sl, DToken st, DAny sr)) ->
-                         (Bintree.add st ts),
-                         (if sl <> "" then Any else l),
-                         (if sr <> "" then Any else r),
-                         c2
-                      | DAlt (false, DAny sc2) ->
-                         ts, l, r, (if sc2 <> "" then Any else c2)
-                      | _ -> assert false)
-                    (Bintree.empty, Nil, Nil, Nil) alt_best_reads in
-                let tm' = (* shortcut: replacing constant regex by a Const string *)
-                  match tm with
-                  | Regex _ when Bintree.cardinal ts = 1 -> Const (Bintree.choose ts)
-                  | _ -> tm in
-                let m' = Factor (l, tm', r) in
-                let m'= if alt then Alt (Undet, m', c2) else m' in
-                Myseq.return m' in
-           let r = RCell m' in
-           Myseq.return (This,r,m'))
+         (fun r_info ~alt best_reads ->
+           match r_info with
+           | `IsNil ->
+              let m' = Nil in
+              if alt then Myseq.empty (* not to generate model Alt (Nil, Any) *)
+              else Myseq.return (This, RCell m', m', best_reads)
+           | `Token tm ->
+              let ts, l, r, c2 = (* token string set, left and right (Nil if all empty strings, Any otherwise), alternative (Nil if all alts are empty) *)
+                List.fold_left
+                  (fun (ts,l,r,c2) (matching,_read,data') ->
+                    match matching, data' with
+                    | true, DFactor (DAny sl, DToken st, DAny sr) ->
+                       (Bintree.add st ts),
+                       (if sl <> "" then Any else l),
+                       (if sr <> "" then Any else r),
+                       c2
+                    | false, DAny sc2 ->
+                       ts, l, r, (if sc2 <> "" then Any else c2)
+                    | _ -> assert false)
+                  (Bintree.empty, Nil, Nil, Nil) best_reads in
+              let tm' = (* shortcut: replacing constant regex by a Const string *)
+                match tm with
+                | Regex _ when Bintree.cardinal ts = 1 -> Const (Bintree.choose ts)
+                | _ -> tm in
+              let m' = Factor (l, tm', r) in
+              let m', best_reads =
+                if alt then make_alt m' c2 best_reads
+                else m', best_reads in
+              Myseq.return (This, RCell m', m', best_reads))
 
     | Factor (l,t,r) ->
        Myseq.concat
@@ -1317,23 +1325,21 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                    | DAlt (false, _) -> []
                    | _ -> assert false)
                  (fun (`Expr e) best_reads ->
-                   let cond = BoolExpr e in
                    extend_partial_best_reads
                      selected_reads best_reads
                      (fun read ->
                        match read.data with
                        | DAlt (db, _) ->
-                          if not db && eval_cond_model cond read.bindings = Result.Ok False
+                          if not db && eval_bool_expr e read.bindings = Result.Ok false
                           then Some (read, read.data)
                           else None
                        | _ -> assert false))
-                 (fun (`Expr e) ~alt _alt_best_reads ->
+                 (fun (`Expr e) ~alt best_reads ->
                    if not alt
                    then
                      let cond = BoolExpr e in
-                     let r = RCond cond in
                      let m' = Alt (cond, c1, c2) in
-                     Myseq.return (Cond,r, m')
+                     Myseq.return (Cond, RCond cond,  m', best_reads)
                    else Myseq.empty)
             | True | False | BoolExpr _ -> Myseq.empty);
            
@@ -1373,13 +1379,15 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                [] (Expr.exprset_to_seq es) in
            rs)
          (fun r_info best_reads -> best_reads)
-         (fun r_info ~alt _alt_best_reads ->
+         (fun r_info ~alt best_reads ->
            let m' =
              match r_info with
              | `Expr e -> Expr e in
-           let m' = if alt then Alt (Undet, m',m) else m' in
-           let r = RToken m' in
-           Myseq.return (This,r,m'))
+           let m', best_reads =
+             if alt then make_alt m' m best_reads
+             else m', best_reads in
+           Myseq.return (This, RToken m', m', best_reads))
+      
     | Regex rm ->
        let rm'_candidates =
          match rm with
@@ -1411,7 +1419,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                rs (Expr.exprset_to_seq es) in
            rs)
          (fun r_info best_reads -> best_reads)
-         (fun r_info ~alt _alt_best_reads ->
+         (fun r_info ~alt best_reads ->
            let* m' =
              match r_info with
              | `CommonStr s ->
@@ -1419,9 +1427,11 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                 else Myseq.return (Const s)
              | `RE re' -> Myseq.return (Regex re')
              | `Expr e -> Myseq.return (Expr e) in
-           let m' = if alt then Alt (Undet, m',m) else m' in
-           let r = RToken m' in
-           Myseq.return (This,r,m'))
+           let m', best_reads =
+             if alt then make_alt m' m best_reads
+             else m', best_reads in
+           Myseq.return (This, RToken m', m', best_reads))
+
     | Expr e -> Myseq.empty
      
 let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : (row path * refinement * int (* support *) * dl * row model) Myseq.t =
