@@ -5,7 +5,7 @@ let def_param name v to_str =
   Printf.printf "## %s = %s\n" name (to_str v);
   ref v
 
-let alpha = def_param "alpha" 1. (* TEST *) string_of_float
+let alpha = def_param "alpha" 10. (* TEST *) string_of_float
 let max_nb_parse = def_param "max_nb_parse" 256 string_of_int (* max nb of considered doc parses *)
 let max_nb_reads = def_param "max_nb_doc_reads" 3 string_of_int (* max nb of selected doc reads, passed to the next stage *)
 let max_parse_dl_factor = def_param "max_parse_dl_factor" 3. string_of_float (* compared to best parse, how much longer alternative parses can be *)
@@ -1087,7 +1087,15 @@ let partition_map_reads (f : 'a -> ('b,'c) Result.t) (selected_reads : 'a list l
     other_reads
 
 type 'a best_reads = (bool * 'a read * 'a data) list (* for each example, a matching flag, the selected best read, and new data *)
-  
+
+let best_reads_stats (best_reads : 'a best_reads) : int * int = (* support, total *)
+  List.fold_left
+    (fun (supp,nb) (matching, _read, _data) ->
+      if matching
+      then supp+1, nb+1
+      else supp, nb+1)
+    (0,0) best_reads
+                   
 let inter_union_reads
     : type a r.
            (a read -> (r * a data) list)
@@ -1182,13 +1190,7 @@ let local_refinements
   let r_best_reads = inter_union_reads rs_of_read selected_reads in
   let* r_info, best_reads = Mymap.to_seq r_best_reads in
   let best_reads = postprocess_best_reads r_info best_reads in
-  let supp, nb =
-    List.fold_left
-      (fun (supp,nb) (matching, _read, _data) ->
-        if matching
-        then supp+1, nb+1
-        else supp, nb+1)
-      (0,0) best_reads in
+  let supp, nb = best_reads_stats best_reads in
   let alt = (supp < nb) in
   let* p, r, m', best_reads = make_r_m' r_info ~alt best_reads in
   let encoder_m' = encoder m' in
@@ -1336,15 +1338,19 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                    | DAlt (false, _) -> []
                    | _ -> assert false)
                  (fun (`Expr e) best_reads ->
-                   extend_partial_best_reads
-                     selected_reads best_reads
-                     (fun read ->
-                       match read.data with
-                       | DAlt (db, _) ->
-                          if not db && eval_bool_expr e read.bindings = Result.Ok false
-                          then Some (read, read.data)
-                          else None
-                       | _ -> assert false))
+                   let supp, nb = best_reads_stats best_reads in
+                   if supp <= 1 && (match e with `Unary (`Equals _, _) -> true | _ -> false)
+                   then best_reads (* ignoring equality condition true on a single example *)
+                   else
+                     extend_partial_best_reads
+                       selected_reads best_reads
+                       (fun read ->
+                         match read.data with
+                         | DAlt (db, _) ->
+                            if not db && eval_bool_expr e read.bindings = Result.Ok false
+                            then Some (read, read.data)
+                            else None
+                         | _ -> assert false))
                  (fun (`Expr e) ~alt best_reads ->
                    if not alt
                    then
@@ -1434,7 +1440,8 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
            let* m' =
              match r_info with
              | `CommonStr s ->
-                if alt then Myseq.empty (* to avoid rote learning, enumerating occurring values *)
+                (*let supp, nb = best_reads_stats best_reads in*)
+                if alt (* && supp <= 1 *) then Myseq.empty (* to avoid rote learning, enumerating occurring values *)
                 else Myseq.return (Const s)
              | `RE re' -> Myseq.return (Regex re')
              | `Expr e -> Myseq.return (Expr e) in
@@ -1452,8 +1459,7 @@ let refinements ~nb_env_paths (m : row model) ?(dl_M : dl = 0.) (rsr : reads) : 
   let* p, r, supp, dl' =
     refinements_aux ~nb_env_paths ~dl_M m selected_reads other_reads_env
     |> Myseq.sort (fun (p1,r1,supp1,dl1) (p2,r2,supp2,dl2) ->
-           if supp1 = supp2 then dl_compare dl1 dl2
-           else Stdlib.compare supp2 supp1) (* by decreasing support first *)
+           dl_compare dl1 dl2) (* support use for sorting in LIS UI *)
     |> Myseq.slice ~limit:!max_refinements in
   let m' = apply_refinement r p m in
   Myseq.return (p, r, supp, dl', m')
