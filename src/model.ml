@@ -76,10 +76,10 @@ type cond_model =
   
 let cond_model_asd : [`Cond] asd =
   let cond_prods =
-    ["Undet", [];
+    ["Undet", 0, []; (* the null-size model *)
      (* "True", [];
      "False", []; *) (* True/False entails Alt reduction to one branch *)
-     "BoolExpr", []]
+     "BoolExpr", 1, []]
   in
   ASD (function `Cond -> cond_prods)
 
@@ -104,17 +104,17 @@ type model_asd_type = [`Row of int (* nb rows *) | `Cell | `Token]
                
 let model_asd : model_asd_type asd =
   let row_prods k =
-    ["Row", List.init k (fun _ -> `Cell)] in
+    ["Row", 0, List.init k (fun _ -> `Cell)] in
   let cell_prods =
-    ["Nil", [];
-     "Any", [];
-     "Factor", [`Cell; `Token; `Cell];
-     "Alt", [`Cell; `Cell]] in
+    ["Nil", 0, []; (* the null-size cell model *)
+     "Any", 1, [];
+     "Factor", 1, [`Token; `Cell; `Cell];
+     "Alt", 1, [`Cell; `Cell]] in
   let token_prods =
-    ["Const", [];
-     "Regex", [];
-     "Expr", [];
-     "Alt", [`Token; `Token]]
+    ["Const", 1, [];
+     "Regex", 1, [];
+     "Expr", 1, [];
+     "Alt", 1, [`Token; `Token]]
   in
   ASD (function
       | `Row k -> row_prods k
@@ -750,6 +750,9 @@ let dl_string_regex (re : regex_model) (s : string) : dl =
   let chars = chars_of_regex re in
   let init_occs = init_occs_of_regex re in
   dl_chars ?init_occs chars s
+
+let dl_token_length ~(range : int * int option) (nt : int) : dl =
+  dl_bell_range ~median:(!median_token_length) ~range nt
   
 let rec dl_model_env_stats : type a. a model -> int = function
   (* counting paths to tokens (see bindings) *)
@@ -785,12 +788,12 @@ let dl_cond_model_ast = make_dl_ast cond_model_asd
 let dl_cond_model ~nb_env_paths (b : cond_model) : dl =
   let n, dl_leaves =
     match b with
-    | Undet -> 1, 0.
+    | Undet -> 0, 0.
     | True -> assert false
     | False -> assert false
     | BoolExpr e -> 1, dl_expr ~nb_env_paths e
   in
-  Mdl.Code.universal_int_plus n
+  Mdl.Code.universal_int_star n
   +. dl_cond_model_ast `Cond n
   +. dl_leaves
 
@@ -805,8 +808,8 @@ let rec dl_model_aux : type a. nb_env_paths: int -> a model -> int (* size *) * 
        (fun (n,dl) m_i ->
          let n_i, dl_i = dl_model_aux ~nb_env_paths m_i in
          n + n_i, dl +. dl_i)
-       (1,0.) lm
-  | Nil -> 1, 0.
+       (0,0.) lm
+  | Nil -> 0, 0. (* see encoding of Nil in [model_asd] *)
   | Any -> 1, 0.
   | Factor (l,t,r) ->
      let n_l, dl_l = dl_model_aux ~nb_env_paths l in
@@ -823,7 +826,7 @@ let rec dl_model_aux : type a. nb_env_paths: int -> a model -> int (* size *) * 
      dl_cond_model ~nb_env_paths b +. dl_1 +. dl_2
   | Const s ->
      1,
-     Mdl.Code.universal_int_plus (String.length s)
+     dl_token_length ~range:(1,None) (String.length s)
      +. dl_string_ascii s
   | Regex rm ->
      1,
@@ -834,7 +837,7 @@ let rec dl_model_aux : type a. nb_env_paths: int -> a model -> int (* size *) * 
 
 let dl_model ~(nb_env_paths : int) (m : 'a model) : dl =
   let n, dl_leaves = dl_model_aux ~nb_env_paths m in
-  Mdl.Code.universal_int_plus n (* encoding model size *)
+  Mdl.Code.universal_int_star n (* encoding model size *)
   +. dl_model_ast (model_asd_type m) n (* encoding model AST *)
   +. dl_leaves (* encoding model leaves *)
 
@@ -879,7 +882,13 @@ let rec encoder : type a. a model -> a data encoder = function
       | _ -> assert false)
   | Any ->
      (function
-      | DAny s -> dl_string_ascii s
+      | DAny s -> (* encoded like Factor (Nil, Regex Chars, Factor (Nil, ...)) *)
+         let n = String.length s in
+         dl_string_ascii s (* string contents *)
+         +. (if n=0
+             then 0.
+             else float n *. dl_token_length ~range:(1, Some n) 1) (* n 1-char token lengths *)
+      (* TODO: consider adding positions: log n + ... + log 1 *)
       | _ -> assert false)
   | Factor (l,t,r) ->
      let enc_split = (* TODO: better take into account actual l, t, r *)
@@ -903,7 +912,7 @@ let rec encoder : type a. a model -> a data encoder = function
          (* Range.dl nt range_nt (* encoding nt given n, and ranges, assuming uniform distribution *) *)
          (match range_nt with
           | Range.Closed (a,b) -> (* encoding nt in range_nt, assuming median value *)
-             dl_bell_range ~median:(!median_token_length) ~range:(a,b) nt
+             dl_token_length ~range:(a, Some b) nt
           | _ -> assert false)
          +. Range.dl nl range_nl  (* encoding nl given n, nt, and ranges  *)
          +. 0. (* encoding nr = n - nl - nt *)
@@ -984,7 +993,9 @@ let read ?(dl_assuming_contents_known = false) ~(env : env) ~(bindings : binding
       l_parses (* QUICK *)
       |> List.stable_sort (fun (_,dl1) (_,dl2) -> dl_compare dl1 dl2)
       |> (fun l -> Common.sub_list l 0
-                     (if dl_assuming_contents_known then 1 else !max_nb_reads))
+                     (if dl_assuming_contents_known
+                      then 1 (* TODO: relax because fragile, see task 5, relaxing digit 5 *)
+                      else !max_nb_reads))
                      (* in pruning mode, only best read as we simulate prediction *)
                      (* TODO: should be handled by DLs *)
       |> limit_dl (fun (_,dl) -> dl)

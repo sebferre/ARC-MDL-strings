@@ -109,7 +109,7 @@ let xp_brackets (print : Xprint.t) (xp : Xprint.t -> unit) : unit =
 
 let rec sum_conv (lf : (int -> float) list) (n : int) : float =
   (* distributes [n] over functions in [lf], multiply results, sums over all distribs *)
-  assert (n > 0);
+  (* TODO: memoize recursive calls? *)
   match lf with
   | [] -> assert false
   | [f1] -> f1 n
@@ -118,10 +118,10 @@ let rec sum_conv (lf : (int -> float) list) (n : int) : float =
        (fun n1 res ->
          let card1 = f1 n1 in
          let n' = n - n1 in
-         if card1 > 0. && n' > 0
+         if card1 > 0.
          then res +. card1 *. sum_conv lf1 n'
          else res)
-       1 n 0.
+       0 n 0.
 
 (* mdl *)
                    
@@ -137,26 +137,27 @@ let dl_compare (dl1 : float) (dl2 : float) =
   else 1 [@@inline]
 
 
-type 't asd = ASD of ('t -> (string * 't list) list)
+type 't asd = ASD of ('t -> (string * int * 't list) list) (* constructor name, size, and args *)
+(* there must be a single AST at most with size=0 *)
+(* typical constructor size is 1 *)
     
 let make_dl_ast (ASD asd : 't asd)
     : 't (* AST type *) -> int (* AST size *) -> dl (* dl of ASTs of that size *) =
   let tab : ('t * int, float) Hashtbl.t = Hashtbl.create 1013 in
   let rec aux (t : 't) (n : int) : float =
-    assert (n > 0); (* no null-sized AST *)
     match Hashtbl.find_opt tab (t,n) with
     | Some card -> card
     | None ->
        let prods = asd t in
        let card =
          List.fold_left (* sum over productions *)
-           (fun res (_name, args) ->
+           (fun res (_name, size, args) ->
              let card_prod =
                if args = [] then (* leaf node *)
-                 if n = 1 then 1. else 0.
+                 if n = size then 1. else 0.
                else (* internal node *)
-                 if n > 1
-                 then sum_conv (List.map aux args) (n-1)
+                 if n >= size
+                 then sum_conv (List.map aux args) (n-size)
                  else 0. in
              res +. card_prod)
            0. prods
@@ -165,7 +166,9 @@ let make_dl_ast (ASD asd : 't asd)
        card
   in
   fun t n ->
-  let card = aux t n in
+  let card =
+    if n = 0 then 1. (* only one empty ast *)
+    else aux t n in
   assert (card > 0.);
   Mdl.log2 card
                     
@@ -174,12 +177,20 @@ let make_dl_ast (ASD asd : 't asd)
 let sigmoid ~median x = 1. /. (1. +. exp (median -. x))
 
 (* DL of value x, known to be in range, given bell-shaped prob distrib of (x - median) *)
-let dl_bell_range ~(median : float) ~(range : int * int) (x : int) : dl =
-  let a, b = range in
-  assert (a <= b);
-  assert (a <= x && x <= b);
+let dl_bell_range ~(median : float) ~(range : int * int option) (x : int) : dl =
+  let a, b_opt = range in
+  assert (a <= x);
+  b_opt
+  |> Option.iter (fun b ->
+         assert (a <= b);
+         assert (x <= b));
   let prob =
+    let sig_a = sigmoid ~median (float a -. 0.5) in
+    let sig_b =
+      match b_opt with
+      | Some b -> sigmoid ~median (float b +. 0.5)
+      | None -> 1. in
     (sigmoid ~median (float x +. 0.5) -. sigmoid ~median (float x -. 0.5))
-    /. (sigmoid ~median (float b +. 0.5) -. sigmoid ~median (float a -. 0.5)) in
+    /. (sig_b -. sig_a) in
   -. (Mdl.log2 prob)
 

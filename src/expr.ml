@@ -158,9 +158,9 @@ type 'var expr =
 
 let expr_asd : [`Expr] asd =
   let expr_prods =
-    ["Ref", [];
-     "Unary", [`Expr];
-     "Binary", [`Expr; `Expr]]
+    ["Ref", 0, []; (* the null-size expression *)
+     "Unary", 1, [`Expr];
+     "Binary", 1, [`Expr; `Expr]]
       (* Arg and Fun left for future work *)
   in
   ASD (function `Expr -> expr_prods)
@@ -307,7 +307,7 @@ let dl_funct_binary (f : Funct.binary) : dl =
 let dl_expr_ast = make_dl_ast expr_asd
 
 let rec dl_expr_aux (dl_var : 'var -> dl) : 'var expr -> int (* AST size *) * float = function
-  | `Ref p -> 1, dl_var p
+  | `Ref p -> 0, dl_var p
   | `Unary (f,e1) ->
      let n1, dl1 = dl_expr_aux dl_var e1 in
      1 + n1,
@@ -322,7 +322,7 @@ let rec dl_expr_aux (dl_var : 'var -> dl) : 'var expr -> int (* AST size *) * fl
 
 let dl_expr (dl_var : 'var -> dl) (e : 'var expr) : dl =
   let n, dl_leaves = dl_expr_aux dl_var e in
-  Mdl.Code.universal_int_plus n (* encoding expr AST size *)
+  Mdl.Code.universal_int_star n (* encoding expr AST size *)
   +. dl_expr_ast `Expr n (* encoding AST structure *)
   +. dl_leaves (* encoding AST leaves *)
 
