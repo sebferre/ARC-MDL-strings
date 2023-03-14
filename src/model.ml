@@ -1440,8 +1440,8 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
            let* m' =
              match r_info with
              | `CommonStr s ->
-                (*let supp, nb = best_reads_stats best_reads in*)
-                if alt (* && supp <= 1 *) then Myseq.empty (* to avoid rote learning, enumerating occurring values *)
+                let supp, nb = best_reads_stats best_reads in
+                if alt && supp <= 1 then Myseq.empty (* to avoid rote learning, enumerating occurring values *)
                 else Myseq.return (Const s)
              | `RE re' -> Myseq.return (Regex re')
              | `Expr e -> Myseq.return (Expr e) in
