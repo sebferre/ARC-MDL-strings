@@ -198,16 +198,20 @@ and eval_unary f v1 =
      Result.Ok (`String res)
   | `Upper_letters, `String s1 ->
      let res = Funct.upper_letters s1 in
-     Result.Ok (`String res)
+     if res = "" then Result.Error (Failure "No upper letters")
+     else Result.Ok (`String res)
   | `Lower_letters, `String s1 ->
      let res = Funct.lower_letters s1 in
-     Result.Ok (`String res)
+     if res = "" then Result.Error (Failure "No lower letters")
+     else Result.Ok (`String res)
   | `Letters, `String s1 ->
      let res = Funct.letters s1 in
-     Result.Ok (`String res)
+     if res = "" then Result.Error (Failure "No letters")
+     else Result.Ok (`String res)
   | `Digits, `String s1 ->
      let res = Funct.digits s1 in
-     Result.Ok (`String res)
+     if res = "" then Result.Error (Failure "No digits")
+     else Result.Ok (`String res)
   | `Prefix pos, `String s1 ->
      let| res = Funct.prefix ~pos s1 in
      Result.Ok (`String res)
@@ -297,9 +301,22 @@ and eval_binary f v1 v2 =
 let dl_funct_unary (f : Funct.unary) : dl =
   Mdl.Code.uniform Funct.nb_unary
   +. (match f with
+      | `Uppercase | `Lowercase -> 0.
+      | `Upper_letters | `Lower_letters | `Letters | `Digits -> 0.
       | `Prefix pos | `Suffix pos ->
          Mdl.Code.universal_int_plus (abs pos) +. 1. (* pos sign *)
-      | _ -> 0.)
+      | `Length | `Concat -> 0.
+      | `Day | `Month | `Year | `Hours | `Minutes | `Seconds -> 0.
+      | `Equals v ->
+         (match v with
+          | `String s ->
+             dl_bell_range ~median:3. ~range:(0,None) (String.length s)
+             +. dl_string_ascii s
+          | `Int i ->
+             let n = if i >= 0 then i * 2 else (-2 * i - 1) in
+             Mdl.Code.universal_int_star n
+          | _ -> assert false)
+     )
 
 let dl_funct_binary (f : Funct.binary) : dl =
   Mdl.Code.uniform Funct.nb_binary

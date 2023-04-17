@@ -514,32 +514,6 @@ exception Parse_failure
 
 type ('a,'b) parseur = 'a -> 'b Myseq.t
 
-let chars_letters =
-  ['A'; 'B'; 'C'; 'D'; 'E'; 'F'; 'G'; 'H'; 'I'; 'J'; 'K'; 'L'; 'M'; 'N'; 'O'; 'P'; 'Q'; 'R'; 'S'; 'T'; 'U'; 'V'; 'W'; 'X'; 'Y'; 'Z';
-   'a'; 'b'; 'c'; 'd'; 'e'; 'f'; 'g'; 'h'; 'i'; 'j'; 'k'; 'l'; 'm'; 'n'; 'o'; 'p'; 'q'; 'r'; 's'; 't'; 'u'; 'v'; 'w'; 'x'; 'y'; 'z']
-let chars_digits =
-  ['0'; '1'; '2'; '3'; '4'; '5'; '6'; '7'; '8'; '9']
-let chars_decimal =
-  '.' :: chars_digits
-let chars_word =
-  '_' :: chars_digits @ chars_letters
-let chars_operators =
-  ['#'; '$'; '%'; '&'; '*'; '+'; '-'; '/'; '<'; '='; '>'; '@'; '\\'; '^'; '|'; '~']
-let chars_content =
-  chars_word @ chars_operators
-let chars_spaces =
-  [' '; '\n'; '\t'; '\r']
-let chars_puncts =
-  ['!'; ','; '.'; ':'; ';'; '?']
-let chars_quotes =
-  ['"'; '\''; '`']
-let chars_brackets =
-  ['('; ')'; '['; ']'; '{'; '}']
-let chars_separators =
-  chars_spaces @ chars_puncts @ chars_quotes @ chars_brackets
-let chars =
-  chars_content @ chars_separators
-
 let chars_of_regex = function
   | Content -> chars_content
   | Word -> chars_word
@@ -736,24 +710,14 @@ let init_occs_of_regex = function
   (* | Content | Word | Letters -> Some ascii_init_occs *) (* left for future work *)
   | _ -> None
      
-let dl_chars ?init_occs chars (s : string) : dl =
-  (* using prequential code, assuming string length known *)
-  let pc = new Mdl.Code.prequential ?init_occs chars () in
-  String.iter
-    (fun c -> ignore (pc#code c))
-    s;
-  pc#cumulated_dl
-
-let dl_string_ascii (s : string) : dl = dl_chars chars s
-
+let dl_token_length ~(range : int * int option) (nt : int) : dl =
+  dl_bell_range ~median:(!median_token_length) ~range nt
+  
 let dl_string_regex (re : regex_model) (s : string) : dl =
   let chars = chars_of_regex re in
   let init_occs = init_occs_of_regex re in
   dl_chars ?init_occs chars s
 
-let dl_token_length ~(range : int * int option) (nt : int) : dl =
-  dl_bell_range ~median:(!median_token_length) ~range nt
-  
 let rec dl_model_env_stats : type a. a model -> int = function
   (* counting paths to tokens (see bindings) *)
   | Row lm ->

@@ -86,6 +86,32 @@ let myseq_concat_if cond seq1 seq2 =
 
 
 (* regex *)
+
+let chars_letters =
+  ['A'; 'B'; 'C'; 'D'; 'E'; 'F'; 'G'; 'H'; 'I'; 'J'; 'K'; 'L'; 'M'; 'N'; 'O'; 'P'; 'Q'; 'R'; 'S'; 'T'; 'U'; 'V'; 'W'; 'X'; 'Y'; 'Z';
+   'a'; 'b'; 'c'; 'd'; 'e'; 'f'; 'g'; 'h'; 'i'; 'j'; 'k'; 'l'; 'm'; 'n'; 'o'; 'p'; 'q'; 'r'; 's'; 't'; 'u'; 'v'; 'w'; 'x'; 'y'; 'z']
+let chars_digits =
+  ['0'; '1'; '2'; '3'; '4'; '5'; '6'; '7'; '8'; '9']
+let chars_decimal =
+  '.' :: chars_digits
+let chars_word =
+  '_' :: chars_digits @ chars_letters
+let chars_operators =
+  ['#'; '$'; '%'; '&'; '*'; '+'; '-'; '/'; '<'; '='; '>'; '@'; '\\'; '^'; '|'; '~']
+let chars_content =
+  chars_word @ chars_operators
+let chars_spaces =
+  [' '; '\n'; '\t'; '\r']
+let chars_puncts =
+  ['!'; ','; '.'; ':'; ';'; '?']
+let chars_quotes =
+  ['"'; '\''; '`']
+let chars_brackets =
+  ['('; ')'; '['; ']'; '{'; '}']
+let chars_separators =
+  chars_spaces @ chars_puncts @ chars_quotes @ chars_brackets
+let chars =
+  chars_content @ chars_separators
   
 let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize *)
   Str.string_match re s 0
@@ -135,7 +161,6 @@ let dl_compare (dl1 : float) (dl2 : float) =
   if dl1 < dl2 then -1
   else if dl1 = dl2 then 0
   else 1 [@@inline]
-
 
 type 't asd = ASD of ('t -> (string * int * 't list) list) (* constructor name, size, and args *)
 (* there must be a single AST at most with size=0 *)
@@ -194,3 +219,12 @@ let dl_bell_range ~(median : float) ~(range : int * int option) (x : int) : dl =
     /. (sig_b -. sig_a) in
   -. (Mdl.log2 prob)
 
+let dl_chars ?init_occs (chars : char list) (s : string) : dl =
+  (* using prequential code, assuming string length known *)
+  let pc = new Mdl.Code.prequential ?init_occs chars () in
+  String.iter
+    (fun c -> ignore (pc#code c))
+    s;
+  pc#cumulated_dl
+
+let dl_string_ascii (s : string) : dl = dl_chars chars s
