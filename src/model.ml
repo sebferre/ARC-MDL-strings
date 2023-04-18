@@ -1654,7 +1654,8 @@ let learn_model
     Result.to_option
       (let| prs = read_pairs ~pruning m pairs in
        let drsi, drso = split_pairs_read prs in
-       Result.Ok (prs,drsi,drso))
+       let dl_triples = norm_dl_model_data prs in
+       Result.Ok (prs,drsi,drso,dl_triples))
   in
   let lm_build, timed_out_build =      
   Mdl.Strategy.beam
@@ -1673,9 +1674,8 @@ let learn_model
          pp_task_refinement r; print_newline ();
          pp_task_model m; print_newline ();
          raise exn)
-    ~code:(fun (r,m) (prs,gsri,gsro) ->
-	   let (lmi,lmo,lm), (ldi,ldo,ld), (_lmdi,_lmdo,lmd) =
-	     norm_dl_model_data prs in
+    ~code:(fun (r,m) (prs,gsri,gsro,dl_triples) ->
+	   let (lmi,lmo,lm), (ldi,ldo,ld), (_lmdi,_lmdo,lmd) = dl_triples in
            if verbose then (
              Printf.printf "\t?? %.3f\t" lmd;
              pp_task_refinement r; print_newline ();
@@ -1707,7 +1707,7 @@ let learn_model
 	   flush stdout;
            lmd)
     ~refinements:
-    (fun (r,m) (prs,gsri,gsro) dl ->
+    (fun (r,m) (prs,gsri,gsro,dl_triples) dl ->
       if verbose then print_newline ();
       Printf.printf "%.3f\t" dl; pp_task_refinement r; print_newline ();
       if verbose then (
@@ -1726,11 +1726,12 @@ let learn_model
       refs) in
   match lm_build with
   | [] -> assert false
-  | ((_,m_build), (psr_build,_,_), _)::_ ->
+  | ((_,m_build), (psr_build,_,_,_), _)::_ ->
      let lm_prune, timed_out_prune =
        if timeout_prune = 0 (* no pruning *)
        then lm_build, timed_out_build
-       else
+       else (
+         print_endline "PRUNING PHASE";
          Mdl.Strategy.beam
            ~timeout:timeout_prune
            ~beam_width:1
@@ -1739,19 +1740,22 @@ let learn_model
            ~data:(fun (r,m) ->
              try data_of_model ~pruning:true m
              with _ -> None)
-           ~code:(fun (r,m) (psr,sri,sro) ->
-	     let (lmi,lmo,lm), (ldi,ldo,ld), (_lmdi,_lmdo,lmd) =
-               norm_dl_model_data psr in
+           ~code:(fun (r,m) (psr,sri,sro,dl_triples) ->
+	     let (lmi,lmo,lm), (ldi,ldo,ld), (_lmdi,_lmdo,lmd) = dl_triples in
              if verbose then (
                Printf.printf "\t?? %.3f\t" lmd;
                pp_task_refinement r; print_newline ());
              flush stdout;
              lmd) (* only parse ranks counted for input grids *)
-           ~refinements:(fun (r,m) (psr,sri,sro) dl ->
-             task_prune_refinements m) in
+           ~refinements:(fun (r,m) (psr,sri,sro,dl_triples) dl ->
+             Printf.printf "%.3f\t" dl; pp_task_refinement r; print_newline ();
+             flush stdout;
+             let refs = task_prune_refinements m in
+             refs)
+       ) in
      match lm_prune with
      | [] -> assert false
-     | ((_,m_prune), (psr_prune,_,_), _)::_ ->
+     | ((_,m_prune), (psr_prune,_,_,_), _)::_ ->
         (m_build, psr_build, timed_out_build),
         (m_prune, psr_prune, timed_out_prune))
 
