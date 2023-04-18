@@ -106,8 +106,8 @@ object
         |> List.rev (* to preserve ordering from sequence *) 
         |> List.sort (* sorting by decreasing support, then increasing DL *)
              (fun s1 s2 -> Stdlib.compare
-                             (s2.refinement_support, s1.norm_dl)
-                             (s1.refinement_support, s2.norm_dl)) in
+                             ((*s2.refinement_support,*) s1.norm_dl)
+                             ((*s1.refinement_support,*) s2.norm_dl)) in
       let suggestions =
         InputTask (new Focus.input (name0,task0))
         :: ResetTask
