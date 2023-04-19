@@ -226,9 +226,11 @@ let gulwani_names = (* List.sort Stdlib.compare (Array.to_list (Sys.readdir gulw
     "example6.json";
     "example7.json";
     "example8.json";
+    (*    "example8_modified.json"; (* removing ambiguity *) *)
     "example9.json";
     "example10.json";
     "example11.json";
+    (* "example11_modified.json"; (* removing typo *) *)
     "example12.json";
     "example13.json";
     "example14.json" ]

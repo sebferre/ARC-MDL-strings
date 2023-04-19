@@ -164,17 +164,17 @@ let rec id_of_path : type a. ?power2:int -> ?acc:int -> a path -> string =
      string_of_int id ^ "?"
   | Branch (b,p1) -> id_of_path ~power2:(2 * power2) ~acc:(if b then acc else power2 + acc) p1
   
-let xp_row_path (print : Xprint.t) (p : row path) =
+let xp_row_path ~(html : bool) (print : Xprint.t) (p : row path) =
   let id = id_of_path p in
-  print#string "<span class=\"model-path\">";
+  if html then print#string "<span class=\"model-path\">";
   print#string id;
-  print#string "</span>"
-let pp_row_path = Xprint.to_stdout xp_row_path
+  if html then print#string "</span>"
+let pp_row_path = Xprint.to_stdout (xp_row_path ~html:false)
 
-let xp_brackets_prio ~prio_ctx ~prio print xp =
+let xp_brackets_prio ~html ~prio_ctx ~prio print xp =
   if prio <= prio_ctx
   then xp print
-  else xp_brackets print xp
+  else xp_brackets ~html print xp
 
 let xp_regex_model print = function
   | Content -> print#string "Content"
@@ -185,7 +185,7 @@ let xp_regex_model print = function
   | Separators -> print#string "Separators"
   | Spaces -> print#string "Spaces"
 
-let xp_cond_model print = function
+let xp_cond_model ~(html : bool) print = function
   | Undet ->
      print#string "?"
   | True ->
@@ -193,148 +193,157 @@ let xp_cond_model print = function
   | False ->
      print#string "false"
   | BoolExpr e ->
-     print#string "<span class=\"model-expr\">";
-     Expr.xp_expr xp_row_path print e;
-     print#string "</span>"
+     if html then print#string "<span class=\"model-expr\">";
+     Expr.xp_expr (xp_row_path ~html:false) print e;
+     if html then print#string "</span>"
 
-let xp_path : type a. Xprint.t -> ?ctx:(a ctx) -> a path -> unit =
-  fun print ?ctx p1 ->
+let xp_path : type a. html:bool -> Xprint.t -> ?ctx:(a ctx) -> a path -> unit =
+  fun ~html print ?ctx p1 ->
   ctx
   |> Option.map (fun ctx -> ctx p1)
-  |> Option.iter (fun p -> xp_row_path print p; print#string ": ")
+  |> Option.iter (fun p -> xp_row_path ~html print p; print#string ": ")
 
-let rec xp_model : type a. ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model -> unit =
-  fun ?(prio_ctx = 2) print ?ctx m ->
+let rec xp_model : type a. html:bool -> ?prio_ctx:int -> Xprint.t -> ?ctx:(a ctx) -> a model -> unit =
+  fun ~html ?(prio_ctx = 2) print ?ctx m ->
   match m with
   | Row lm ->
      List.iteri
        (fun i m ->
          let ctx_cell = ctx |> Option.map (fun ctx -> (fun p -> ctx (Col (i,p)))) in
-         if i > 0 then print#string "</br>";
-         ctx |> Option.iter (fun ctx -> xp_row_path print (ctx (Col (i,This))); print#string "&nbsp;");
-         xp_model ~prio_ctx print ?ctx:ctx_cell m)
+         if i > 0 then print#string (if html then "</br>" else "\n");
+         ctx |> Option.iter (fun ctx -> xp_row_path ~html print (ctx (Col (i,This))); print#string (if html then "&nbsp;" else ": "));
+         xp_model ~html ~prio_ctx print ?ctx:ctx_cell m)
        lm
   | Nil -> ()
-  | Any -> print#string "<span class=\"model-any\">*</span>"
+  | Any ->
+     if html
+     then print#string "<span class=\"model-any\">*</span>"
+     else print#string "*"
   | Factor (l,t,r) ->
      let ctx_l = ctx |> Option.map (fun ctx -> (fun p -> ctx (Left p))) in
      let ctx_t = ctx |> Option.map (fun ctx -> (fun p -> ctx (Middle p))) in
      let ctx_r = ctx |> Option.map (fun ctx -> (fun p -> ctx (Right p))) in
-     xp_brackets_prio ~prio_ctx ~prio:0 print
+     xp_brackets_prio ~html ~prio_ctx ~prio:0 print
        (fun print ->
-         print#string "<div class=\"model-factor\">";
-         xp_model ~prio_ctx:0 print ?ctx:ctx_l l;
-         xp_model ~prio_ctx:0 print ?ctx:ctx_t t;
-         xp_model ~prio_ctx:0 print ?ctx:ctx_r r;
-         print#string "</div>")
+         if html then print#string "<div class=\"model-factor\">";
+         xp_model ~html ~prio_ctx:0 print ?ctx:ctx_l l;
+         if not html then print#string " ";
+         xp_model ~html ~prio_ctx:0 print ?ctx:ctx_t t;
+         if not html then print#string " ";
+         xp_model ~html ~prio_ctx:0 print ?ctx:ctx_r r;
+         if html then print#string "</div>")
   | Alt (Undet, c, Nil) (* c1 ? *) ->
      let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
-     xp_brackets_prio ~prio_ctx ~prio:1 print
+     xp_brackets_prio ~html ~prio_ctx ~prio:1 print
        (fun print ->
-         print#string "<div class=\"model-alt\">";
-         xp_path print ?ctx Cond;
+         if html then print#string "<div class=\"model-alt\">";
+         xp_path ~html print ?ctx Cond;
          (*p_b_opt |> Option.iter (fun p -> xp_row_path print p; print#string ": ");*)
-         xp_model ~prio_ctx:1 print ?ctx:ctx_1 c;
-         print#string " <span class=\"model-meta-operator\">?</span>";
-         print#string "</div>")
+         xp_model ~html ~prio_ctx:1 print ?ctx:ctx_1 c;
+         if html then print#string " <span class=\"model-meta-operator\">?</span>" else print#string " ?";
+         if html then print#string "</div>")
   | Alt (Undet,c1,c2) -> (* c1 | c2 *)
      let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
      let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (false, p)))) in
-     xp_brackets_prio ~prio_ctx ~prio:2 print
+     xp_brackets_prio ~html ~prio_ctx ~prio:2 print
        (fun print ->
-         print#string "<div class=\"model-alt\">";
-         xp_path print ?ctx Cond;
-         xp_model ~prio_ctx:2 print ?ctx:ctx_1 c1;
-         print#string " <span class=\"model-meta-operator\">|</span> ";
-         xp_model ~prio_ctx:2 print ?ctx:ctx_2 c2;
-         print#string "</div>")
+         if html then print#string "<div class=\"model-alt\">";
+         xp_path ~html print ?ctx Cond;
+         xp_model ~html ~prio_ctx:2 print ?ctx:ctx_1 c1;
+         print#string (if html then " <span class=\"model-meta-operator\">|</span> " else " | ");
+         xp_model ~html ~prio_ctx:2 print ?ctx:ctx_2 c2;
+         if html then print#string "</div>")
   | Alt (b,c1,Nil) -> (* if b then c1 *)
      let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
-     xp_brackets_prio ~prio_ctx ~prio:2 print
+     xp_brackets_prio ~html ~prio_ctx ~prio:2 print
        (fun print ->
-         print#string "<div class=\"model-alt\">";
-         xp_path print ?ctx Cond;
-         print#string "<span class=\"model-meta-operator\">if</span> ";
-         xp_cond_model print b;
-         print#string " <span class=\"model-meta-operator\">then</span> ";
-         xp_model ~prio_ctx:2 print ?ctx:ctx_1 c1;
-         print#string "</div>")     
+         if html then print#string "<div class=\"model-alt\">";
+         (*xp_path ~html print ?ctx Cond;*)
+         print#string (if html then "<span class=\"model-meta-operator\">if</span> " else "if ");
+         xp_cond_model ~html print b;
+         print#string (if html then " <span class=\"model-meta-operator\">then</span> " else " then ");
+         xp_model ~html ~prio_ctx:2 print ?ctx:ctx_1 c1;
+         if html then print#string "</div>")
   | Alt (b,c1,c2) -> (* if b then c1 else c2 *)
      let ctx_1 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (true, p)))) in
      let ctx_2 = ctx |> Option.map (fun ctx -> (fun p -> ctx (Branch (false, p)))) in
-     xp_brackets_prio ~prio_ctx ~prio:2 print
+     xp_brackets_prio ~html ~prio_ctx ~prio:2 print
        (fun print ->
-         print#string "<div class=\"model-alt\">";
-         xp_path print ?ctx Cond;
-         print#string "<span class=\"model-meta-operator\">if</span> ";
-         xp_cond_model print b;
-         print#string " <span class=\"model-meta-operator\">then</span> ";
-         xp_model ~prio_ctx:2 print ?ctx:ctx_1 c1;
-         print#string " <span class=\"model-meta-operator\">else</span> ";
-         xp_model ~prio_ctx:2 print ?ctx:ctx_2 c2;
-         print#string "</div>")     
+         if html then print#string "<div class=\"model-alt\">";
+         (*xp_path ~html print ?ctx Cond;*)
+         print#string (if html then "<span class=\"model-meta-operator\">if</span> " else "if ");
+         xp_cond_model ~html print b;
+         print#string (if html then " <span class=\"model-meta-operator\">then</span> " else " then ");
+         xp_model ~html ~prio_ctx:2 print ?ctx:ctx_1 c1;
+         print#string (if html then " <span class=\"model-meta-operator\">else</span> " else " else ");
+         xp_model ~html ~prio_ctx:2 print ?ctx:ctx_2 c2;
+         if html then print#string "</div>")
   | Const s ->
      let p_opt = ctx |> Option.map (fun ctx -> ctx This) in
-     print#string "<span class=\"model-const\"";
-     p_opt |> Option.iter (* print path as tooltip *)
-                (fun p ->
-                  print#string " title=\"";
-                  print#string (id_of_path p);
-                  print#string "\"");
-     print#string ">";
-     xp_string print s;
-     print#string "</span>"
+     if html then (
+       print#string "<span class=\"model-const\"";
+       p_opt |> Option.iter (* print path as tooltip *)
+                  (fun p ->
+                    print#string " title=\"";
+                    print#string (id_of_path p);
+                    print#string "\"");
+       print#string ">");
+     xp_string ~html print s;
+     if html then print#string "</span>"
   | Regex re ->
-     print#string "<span class=\"model-regex\">";
-     xp_path print ?ctx This;
+     print#string (if html then "<span class=\"model-regex\">" else "[");
+     xp_path ~html print ?ctx This;
      xp_regex_model print re;
-     print#string "</span>"
+     print#string (if html then "</span>" else "]")
   | Expr e ->
-     print#string "<span class=\"model-expr\">";
-     Expr.xp_expr xp_row_path print e;
-     print#string "</span>"
-let pp_model : type a. ctx:(a ctx) -> a model -> unit = fun ~ctx m -> Xprint.to_stdout (xp_model ~ctx) m
-let string_of_model : type a. ctx:(a ctx) -> a model -> string = fun ~ctx m -> Xprint.to_string (xp_model ~ctx) m
+     if html then print#string "<span class=\"model-expr\">";
+     Expr.xp_expr (xp_row_path ~html:false) print e;
+     if html then print#string "</span>"
+let pp_model : type a. ctx:(a ctx) -> a model -> unit = fun ~ctx m -> Xprint.to_stdout (xp_model ~html:false ~ctx) m
+let string_of_model : type a. ctx:(a ctx) -> a model -> string = fun ~ctx m -> Xprint.to_string (xp_model ~html:true ~ctx) m
                     
-let rec xp_data : type a. ?prio_ctx:int -> Xprint.t -> a data -> unit =
-  fun ?(prio_ctx = 0) print d ->
+let rec xp_data : type a. html:bool -> ?prio_ctx:int -> Xprint.t -> a data -> unit =
+  fun ~html ?(prio_ctx = 0) print d ->
   match d with
   | DRow ld ->
      List.iteri
        (fun i di ->
-         if i > 0 then print#string "</br>";
-         xp_data print di)
+         if i > 0 then print#string (if html then "</br>" else "\n");
+         xp_data ~html print di)
        ld
   | DNil -> ()
   | DAny s ->
-     print#string "<span class=\"data-any\">";
-     xp_string print s;
-     print#string "</span>"
+     if html then print#string "<span class=\"data-any\">";
+     xp_string ~html print s;
+     if html then print#string "</span>"
   | DFactor (l,t,r) ->
-     xp_brackets_prio ~prio_ctx ~prio:0 print
+     xp_brackets_prio ~html ~prio_ctx ~prio:0 print
        (fun print ->
-         print#string "<div class=\"data-factor\">";
-         xp_data ~prio_ctx:0 print l;
-         xp_data ~prio_ctx:0 print t;
-         xp_data ~prio_ctx:0 print r;
-         print#string "</div>")
+         if html then print#string "<div class=\"data-factor\">";
+         xp_data ~html ~prio_ctx:0 print l;
+         if not html then print#string " ";
+         xp_data ~html ~prio_ctx:0 print t;
+         if not html then print#string " ";
+         xp_data ~html ~prio_ctx:0 print r;
+         if html then print#string "</div>")
   | DAlt (b, DNil) ->
-     xp_brackets_prio ~prio_ctx ~prio:1 print
+     xp_brackets_prio ~html ~prio_ctx ~prio:1 print
        (fun print ->
-         print#string "<div class=\"data-opt\">ε</div>")
+         if html
+         then print#string "<div class=\"data-opt\">ε</div>"
+         else print#string "ε")
   | DAlt (b,c) ->
-     xp_brackets_prio ~prio_ctx ~prio:2 print
+     xp_brackets_prio ~html ~prio_ctx ~prio:2 print
        (fun print ->
-         print#string "<div class=\"data-alt\">";
-         (* print#int i; *)
-         xp_data ~prio_ctx:2 print c;
-         print#string "</div>")
+         if html then print#string "<div class=\"data-alt\">";
+         xp_data ~html ~prio_ctx:2 print c;
+         if html then print#string "</div>")
   | DToken s ->
-     print#string "<span class=\"data-token\">";
-     xp_string print s;
-     print#string "</span>"
-let pp_data : type a. a data -> unit = fun d -> Xprint.to_stdout xp_data d
-let string_of_data : type a. a data -> string = fun d -> Xprint.to_string xp_data d
+     if html then print#string "<span class=\"data-token\">";
+     xp_string ~html print s;
+     if html then print#string "</span>"
+let pp_data : type a. a data -> unit = fun d -> Xprint.to_stdout (xp_data ~html:false) d
+let string_of_data : type a. a data -> string = fun d -> Xprint.to_string (xp_data ~html:true) d
 
                        
 (* bindings and eval *)
@@ -999,12 +1008,12 @@ type refinement =
 let xp_support (print : Xprint.t) (supp : int) =
   print#string " ("; print#int supp; print#string ")"
 
-let xp_refinement (print : Xprint.t) = function
-  | RCell Nil -> print#string "<span class=\"model-nil\">ε</span>"
-  | RCell cell -> xp_model ~prio_ctx:2 print cell
-  | RToken tok -> xp_model ~prio_ctx:2 print tok
-  | RCond cond -> xp_cond_model print cond
-let pp_refinement = Xprint.to_stdout xp_refinement
+let xp_refinement ~(html : bool) (print : Xprint.t) = function
+  | RCell Nil -> print#string (if html then "<span class=\"model-nil\">ε</span>" else "ε") 
+  | RCell cell -> xp_model ~html ~prio_ctx:2 print cell
+  | RToken tok -> xp_model ~html ~prio_ctx:2 print tok
+  | RCond cond -> xp_cond_model ~html print cond
+let pp_refinement = Xprint.to_stdout (xp_refinement ~html:false)
 
 let rec apply_refinement : type a. refinement -> a path -> a model -> a model =
   fun rf p m ->
@@ -1491,12 +1500,12 @@ let init_task_model (t : Task.task) =
   { input_model = row_model0 (Task.input_row_size t);
     output_model = row_model0 (Task.output_row_size t) }
 
-let xp_task_model (print : Xprint.t) (m : task_model) =
-  xp_model print ~ctx:ctx0 m.input_model;
-  print#string " ➜ ";
-  xp_model print ~ctx:ctx0 m.output_model
-let pp_task_model = Xprint.to_stdout xp_task_model
-let string_of_task_model = Xprint.to_string xp_task_model
+let xp_task_model ~(html : bool) (print : Xprint.t) (m : task_model) =
+  xp_model ~html print ~ctx:ctx0 m.input_model;
+  print#string (if html then " ➜ " else "\n->\n");
+  xp_model ~html print ~ctx:ctx0 m.output_model
+let pp_task_model = Xprint.to_stdout (xp_task_model ~html:false)
+let string_of_task_model = Xprint.to_string (xp_task_model ~html:true)
 
              
 type pairs_reads = (* result of reading a list of pairs of grids *)
@@ -1601,21 +1610,21 @@ let task_refinement_support = function
   | Rinput (_,_,supp,_) -> supp
   | Routput (_,_,supp,_) -> supp             
 
-let rec xp_task_refinement (print : Xprint.t) = function
+let rec xp_task_refinement ~(html : bool) (print : Xprint.t) = function
   | RInit -> print#string "init"
-  | Rinput (p,ri,supp,dl') -> xp_task_refinement_aux print " In." p ri supp dl' "i"
-  | Routput (p,ro,supp,dl') -> xp_task_refinement_aux print " Out." p ro supp dl' "o"
-and xp_task_refinement_aux print in_out p r supp dl' i_o =
+  | Rinput (p,ri,supp,dl') -> xp_task_refinement_aux ~html print " In." p ri supp dl' "i"
+  | Routput (p,ro,supp,dl') -> xp_task_refinement_aux ~html print " Out." p ro supp dl' "o"
+and xp_task_refinement_aux ~html print in_out p r supp dl' i_o =
   if dl' <> 0. (* undefined value *) then
     print#string (Printf.sprintf " / ~%.3f%s)  " dl' i_o);
   print#string in_out;
-  xp_row_path print p;
+  xp_row_path ~html print p;
   print#string " ← ";
-  xp_refinement print r;
+  xp_refinement ~html print r;
   if supp <> 0 (* undefined value *) then
     xp_support print supp
-let pp_task_refinement = Xprint.to_stdout xp_task_refinement
-let string_of_task_refinement = Xprint.to_string xp_task_refinement
+let pp_task_refinement = Xprint.to_stdout (xp_task_refinement ~html:false)
+let string_of_task_refinement = Xprint.to_string (xp_task_refinement ~html:true)
 
 let apply_task_refinement (r : task_refinement) (m : task_model) : (task_refinement * task_model) result =
   match r with

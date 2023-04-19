@@ -24,7 +24,7 @@ type value =
 
 let xp_value (print : Xprint.t) : value -> unit = function
   | `Null -> print#string "null"
-  | `String s -> xp_string print s
+  | `String s -> xp_string ~html:false print s
   | `Int i -> print#int i
   | `Bool b -> print#string (if b then "true" else "false")
   | `Date date -> raise TODO

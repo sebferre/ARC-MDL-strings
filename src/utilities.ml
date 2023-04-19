@@ -119,16 +119,20 @@ let regexp_match_full (re : Str.regexp) (s : string) : bool = (* TODO: optimize 
 
 (* printing *)
   
-let xp_string (print : Xprint.t) (s : string) =
-  print#string "<pre class=\"inline\">";
-  print#string s;
-  print#string "</pre>"
-let pp_string = Xprint.to_stdout xp_string
+let xp_string ~(html : bool) (print : Xprint.t) (s : string) =
+  if html
+  then (
+    print#string "<pre class=\"inline\">";
+    print#string s;
+    print#string "</pre>")
+  else
+    print#string ("\"" ^ String.escaped s ^ "\"")
+let pp_string = Xprint.to_stdout (xp_string ~html:false)
 
-let xp_brackets (print : Xprint.t) (xp : Xprint.t -> unit) : unit =
-  print#string "<div class=\"model-brackets\">";
+let xp_brackets ~html (print : Xprint.t) (xp : Xprint.t -> unit) : unit =
+  if html then print#string "<div class=\"model-brackets\">" else print#string "(";
   xp print;
-  print#string "</div>"
+  if html then print#string "</div>" else print#string ")"
 
   
 (* combinatorics *)
