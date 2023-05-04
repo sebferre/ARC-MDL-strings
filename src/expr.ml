@@ -73,13 +73,15 @@ module Funct =
       | `Hours 
       | `Minutes 
       | `Seconds
-      | `Equals of value ]
-    let nb_unary = 17
+      | `Equals of value
+      | `Not ]
+    let nb_unary = 18
 
     type binary =
       [ `Append
+      | `And | `Or | `AndNot | `Xor
       | `Map_list ]
-    let nb_binary = 2
+    let nb_binary = 6
 
     let string_filter (p : char -> bool) (s : string) : string =
       s
@@ -139,9 +141,14 @@ module Funct =
       | `Minutes -> print#string "minutes"
       | `Seconds -> print#string "seconds"
       | `Equals v -> print#string "equals["; xp_value print v; print#string "]"
+      | `Not -> print#string "not"
 
     let xp_binary (print : Xprint.t) : binary -> unit = function
       | `Append -> print#string "append"
+      | `And -> print#string "and"
+      | `Or -> print#string "or"
+      | `AndNot -> print#string "and_not"
+      | `Xor -> print#string "xor"
       | `Map_list -> print#string "map_list"
       
   end
@@ -167,12 +174,23 @@ let expr_asd : [`Expr] asd =
   
 let rec xp_expr (xp_var : 'var Xprint.xp) (print : Xprint.t) : 'var expr -> unit = function
   | `Ref p -> xp_var print p
+  | `Unary (`Not,e1) -> print#string "not "; xp_expr xp_var print e1
   | `Unary (`Equals v0,e1) -> xp_expr xp_var print e1; print#string " = "; xp_value print v0
   | `Unary (f,e1) -> Funct.xp_unary print f; print#string "("; xp_expr xp_var print e1; print#string ")"
   | `Binary (`Append, e1,e2) -> xp_expr xp_var print e1; print#string " + "; xp_expr xp_var print e2
+  | `Binary (`And, e1, e2) -> xp_expr_infix xp_var print " and " e1 e2
+  | `Binary (`Or, e1, e2) -> xp_expr_infix xp_var print " or " e1 e2
+  | `Binary (`AndNot, e1, e2) -> xp_expr_infix xp_var print " and not " e1 e2
+  | `Binary (`Xor, e1, e2) -> xp_expr_infix xp_var print " xor " e1 e2
   | `Binary (f,e1,e2) -> Funct.xp_binary print f; print#string "("; xp_expr xp_var print e1; print#string ","; xp_expr xp_var print e2; print#string ")"
   | `Arg -> print#string "_"
   | `Fun e1 -> print#string "fun { "; xp_expr xp_var print e1; print#string " }"
+and xp_expr_infix xp_var print op e1 e2 =
+  print#string "(";
+  xp_expr xp_var print e1;
+  print#string op;
+  xp_expr xp_var print e2;
+  print#string ")"
   
 exception Invalid_eval_unary of Funct.unary * value
 exception Invalid_eval_binary of Funct.binary * value * value
@@ -243,6 +261,8 @@ and eval_unary f v1 =
   | `Seconds, `Time t1 ->
      let res = Funct.seconds t1 in
      Result.Ok (`Int res)
+  | `Not, `Bool b1 ->
+     Result.Ok (`Bool (not b1))
   | `Equals v0, _ -> (* TODO: consider moving below `Null, `List, and `Fun *)
      Result.Ok (`Bool (v1 = v0))
   | _, `Null ->
@@ -261,7 +281,11 @@ and eval_binary f v1 v2 =
   | `Append, `String s1, `String s2 ->
      let res = Funct.append s1 s2 in
      Result.Ok (`String res)
-  | `Map_list, `Fun fun1, `List l2 ->     
+  | `And, `Bool b1, `Bool b2 -> Result.Ok (`Bool (b1 && b2))
+  | `Or, `Bool b1, `Bool b2 -> Result.Ok (`Bool (b1 || b2))
+  | `AndNot, `Bool b1, `Bool b2 -> Result.Ok (`Bool (b1 && not b2))
+  | `Xor, `Bool b1, `Bool b2 -> Result.Ok (`Bool (b1 <> b2))
+  | `Map_list, `Fun fun1, `List l2 ->
      let| lres = Funct.map_list fun1 l2 in
      Result.Ok (`List lres)
   | _, `Null, _ ->
@@ -307,6 +331,7 @@ let dl_funct_unary (f : Funct.unary) : dl =
          Mdl.Code.universal_int_plus (abs pos) +. 1. (* pos sign *)
       | `Length | `Concat -> 0.
       | `Day | `Month | `Year | `Hours | `Minutes | `Seconds -> 0.
+      | `Not -> 0.
       | `Equals v ->
          (match v with
           | `String s ->
@@ -479,8 +504,14 @@ let make_index (bindings : ('var * value) list) : 'var index =
       (fun res (x,v) -> Index.bind v (`Ref x) res)
       Index.empty bindings in
   let index = (* level 1 *)
+    add_layer_binary index
+      (function
+       | `Bool b1, `Bool b2 -> [`And; `Or; `AndNot; `Xor]
+       | _ -> []) in
+  let index =
     add_layer_unary index
       (function
+       | `Bool _ -> [`Not]
        | `String _ ->
           let res = [`Length; `Upper_letters; `Lower_letters; `Letters; `Digits] in
           let res =

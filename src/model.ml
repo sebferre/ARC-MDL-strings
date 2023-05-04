@@ -1308,7 +1308,7 @@ let rec refinements_aux : type a. nb_env_paths:int -> dl_M:dl -> a model -> a re
                       Myseq.fold_left
                         (fun rs e -> (`Expr e, d) :: rs)
                         [] (Expr.exprset_to_seq es)
-                   | DAlt (false, _) -> []
+                   | DAlt (false, _) -> [] (* TODO: explain why not merging with previous case *)
                    | _ -> assert false)
                  (fun (`Expr e) best_reads ->
                    let supp, nb = best_reads_stats best_reads in
